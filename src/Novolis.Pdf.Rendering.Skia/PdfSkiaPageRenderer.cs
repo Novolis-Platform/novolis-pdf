@@ -166,27 +166,25 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         using (var canvas = new SKCanvas(bitmap))
             Paint(canvas, document, page, plan, view, cancellationToken);
 
-        using var oriented = Orient(bitmap, viewRotation);
-        using var image = SKImage.FromBitmap(oriented);
+        var degrees = NormalizeRotation(viewRotation);
+        using var oriented = degrees == 0 ? null : Orient(bitmap, degrees);
+        var pixels = oriented ?? bitmap;
+        using var image = SKImage.FromBitmap(pixels);
         using var data = image.Encode(SKEncodedImageFormat.Png, 100);
         var status = plan.Diagnostics.Any(static diagnostic => diagnostic.Severity == PdfDiagnosticSeverity.Error)
             ? PdfRenderStatus.Failed
             : plan.Diagnostics.Count > 0 ? PdfRenderStatus.Partial : PdfRenderStatus.Rendered;
         return new PdfRenderedPage(
             page.Info.Index,
-            oriented.Width,
-            oriented.Height,
+            pixels.Width,
+            pixels.Height,
             data.ToArray(),
             status,
             plan.Diagnostics);
     }
 
-    private static SKBitmap Orient(SKBitmap source, int rotation)
+    private static SKBitmap Orient(SKBitmap source, int degrees)
     {
-        var degrees = NormalizeRotation(rotation);
-        if (degrees == 0)
-            return source.Copy() ?? source;
-
         var dest = degrees is 90 or 270
             ? new SKBitmap(source.Height, source.Width, SKColorType.Rgba8888, SKAlphaType.Premul)
             : new SKBitmap(source.Width, source.Height, SKColorType.Rgba8888, SKAlphaType.Premul);
