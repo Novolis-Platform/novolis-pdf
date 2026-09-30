@@ -47,6 +47,30 @@ public sealed class NovolisGeneratedPdfTests
     }
 
     [Test]
+    public async Task CalypsoPageTwoSurvivesEarlierPageFontCache()
+    {
+        if (!File.Exists(CalypsoExportPath))
+            return;
+
+        await using var source = PdfSources.FromStream(
+            File.OpenRead(CalypsoExportPath),
+            Path.GetFileName(CalypsoExportPath),
+            CalypsoExportPath);
+        var document = await PdfParser.ParseAsync(source);
+        var pages = PdfPageTree.Resolve(document);
+        if (pages.Count <= 2)
+            return;
+
+        var isolated = await new PdfSkiaPageRenderer().RenderAsync(document, new PdfRenderRequest(2, 72));
+        var shared = new PdfSkiaPageRenderer();
+        _ = await shared.RenderAsync(document, new PdfRenderRequest(0, 72));
+        var afterCover = await shared.RenderAsync(document, new PdfRenderRequest(2, 72));
+
+        await Assert.That(afterCover.PngBytes.Length).IsGreaterThan(1000);
+        await Assert.That(afterCover.PngBytes.SequenceEqual(isolated.PngBytes)).IsTrue();
+    }
+
+    [Test]
     public async Task CalypsoPageTwoAuthorsNoteMatchesUnicode()
     {
         if (!File.Exists(CalypsoExportPath))

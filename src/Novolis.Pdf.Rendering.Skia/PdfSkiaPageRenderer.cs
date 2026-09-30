@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Novolis.Pdf.Abstractions;
 using Novolis.Pdf.Parsing;
 using Novolis.Pdf.Rendering;
@@ -228,20 +229,9 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
 
         var typeface = ResolveTypeface(document, command, fontResource);
         using var font = new SKFont(typeface, 1);
-        ushort[] glyphs;
-        if (decoded.FromToUnicode
-            && !string.IsNullOrEmpty(decoded.Text)
-            && !decoded.Text.All(static value => value == '\uFFFD'))
-        {
-            glyphs = font.GetGlyphs(decoded.Text);
-            if (glyphs.Length == 0 || glyphs.All(static glyph => glyph == 0))
-                return;
-        }
-        else if (!PdfFontDecoder.TryReadIdentityGlyphs(command, fontResource, out glyphs)
-                 || glyphs.Length == 0)
-        {
+        var glyphs = ResolveGlyphs(font, typeface, decoded, command, fontResource);
+        if (glyphs.Length == 0)
             return;
-        }
 
         var advances = PdfAdvances(command, fontResource, glyphs.Length);
         paint.Style = SKPaintStyle.Fill;
@@ -256,6 +246,33 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
     // SKTextBlob is Y-down; Trm+view already include the PDF Y-up flip.
     private static PdfMatrix TextBlobMatrix(PdfMatrix view, PdfMatrix textRenderingMatrix) =>
         view.Multiply(textRenderingMatrix).Multiply(new PdfMatrix(1, 0, 0, -1, 0, 0));
+
+    private static ushort[] ResolveGlyphs(
+        SKFont font,
+        SKTypeface typeface,
+        PdfDecodedText decoded,
+        PdfTextCommand command,
+        PdfFontResource? fontResource)
+    {
+        var identity = PdfFontDecoder.TryReadIdentityGlyphs(command, fontResource, out var cids)
+            && cids.Length > 0
+            && cids.All(glyph => glyph > 0 && glyph < typeface.GlyphCount)
+            ? cids
+            : [];
+        if (identity.Length > 0)
+            return identity;
+
+        if (decoded.FromToUnicode
+            && !string.IsNullOrEmpty(decoded.Text)
+            && !decoded.Text.All(static value => value == '\uFFFD'))
+        {
+            var mapped = font.GetGlyphs(decoded.Text);
+            if (mapped.Length > 0 && !mapped.All(static glyph => glyph == 0))
+                return mapped;
+        }
+
+        return cids ?? [];
+    }
 
     private static float[] PdfAdvances(PdfTextCommand command, PdfFontResource? font, int glyphCount)
     {
@@ -301,7 +318,7 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         PdfTextCommand command,
         PdfFontResource? font)
     {
-        var key = font?.BaseFont?.Value ?? command.FontName ?? "default";
+        var key = TypefaceKey(command, font);
         if (_typefaces.TryGetValue(key, out var cached))
             return cached;
 
@@ -324,6 +341,17 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
             ?? SKTypeface.Default;
         _typefaces[key] = typeface;
         return typeface;
+    }
+
+    private static string TypefaceKey(PdfTextCommand command, PdfFontResource? font)
+    {
+        if (font?.ResolveEmbeddedFontProgram() is { EncodedBytes.Length: > 0 } program)
+        {
+            var hash = SHA256.HashData(program.EncodedBytes);
+            return $"emb:{program.EncodedBytes.Length}:{Convert.ToHexString(hash.AsSpan(0, 8))}";
+        }
+
+        return $"{command.FontName}:{font?.BaseFont?.Value ?? "default"}";
     }
 
     private static SKColor ToColor(PdfColor color)
