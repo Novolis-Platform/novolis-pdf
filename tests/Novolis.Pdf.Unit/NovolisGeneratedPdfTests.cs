@@ -27,148 +27,23 @@ public sealed class NovolisGeneratedPdfTests
     }
 
     [Test]
-    public async Task CalypsoPageTwoGlyphOrientationDump()
+    public async Task SkiaWrittenCapitalTIsUpright()
     {
-        if (!File.Exists(CalypsoExportPath))
-            return;
-
         await using var source = PdfSources.FromStream(
-            File.OpenRead(CalypsoExportPath),
-            Path.GetFileName(CalypsoExportPath),
-            CalypsoExportPath);
+            new MemoryStream(BuildSkiaIdentityPdf("T")),
+            "skia-T.pdf",
+            "skia-T");
         var document = await PdfParser.ParseAsync(source);
-        var pages = PdfPageTree.Resolve(document);
-        if (pages.Count <= 2)
-            return;
-
-        var page = pages[2];
-        var plan = PdfContentStreamInterpreter.BuildPlan(document, page);
-        var commands = plan.Commands.OfType<PdfTextCommand>().Take(40).ToArray();
-        var dump = new System.Text.StringBuilder();
-        var typefaces = new Dictionary<string, SKTypeface>(StringComparer.Ordinal);
-        foreach (var command in commands)
-        {
-            var fontResource = page.Resources is { } resources
-                ? new PdfResourceDictionary(document, resources).ResolveFont(command.FontName)
-                : null;
-            var decoded = PdfFontDecoder.Decode(document, page, command);
-            var typeface = ResolveDumpTypeface(document, command, fontResource, typefaces);
-            using var font = new SKFont(typeface, 1);
-            PdfFontDecoder.TryReadIdentityGlyphs(command, fontResource, out var identity);
-            var mapped = font.GetGlyphs(decoded.Text);
-            dump.AppendLine(
-                $"uni={decoded.Text} cid=[{string.Join(',', identity)}] get=[{string.Join(',', mapped)}] glyphs={typeface.GlyphCount} font={fontResource?.BaseFont} tm=({command.TextMatrix.A:0.##},{command.TextMatrix.D:0.##},{command.TextMatrix.F:0.##}) trmD={command.TextRenderingMatrix.D:0.##}");
-        }
-
-        var dumpPath = Path.Combine(Path.GetTempPath(), "novolis-pdf-glyph-dump.txt");
-        File.WriteAllText(dumpPath, dump.ToString());
-
-        var current = await new PdfSkiaPageRenderer().RenderAsync(document, new PdfRenderRequest(2, 96));
-        File.WriteAllBytes(Path.Combine(Path.GetTempPath(), "novolis-pdf-page2-current.png"), current.PngBytes);
-
-        RenderGlyphStrip(
+        var rendered = await new PdfSkiaPageRenderer().RenderAsync(
             document,
-            page,
-            commands,
-            typefaces,
-            unflip: false,
-            identityFirst: false,
-            Path.Combine(Path.GetTempPath(), "novolis-pdf-strip-get.png"));
-        RenderGlyphStrip(
-            document,
-            page,
-            commands,
-            typefaces,
-            unflip: true,
-            identityFirst: false,
-            Path.Combine(Path.GetTempPath(), "novolis-pdf-strip-get-unflip.png"));
-        RenderGlyphStrip(
-            document,
-            page,
-            commands,
-            typefaces,
-            unflip: false,
-            identityFirst: true,
-            Path.Combine(Path.GetTempPath(), "novolis-pdf-strip-cid.png"));
-        RenderGlyphStrip(
-            document,
-            page,
-            commands,
-            typefaces,
-            unflip: true,
-            identityFirst: true,
-            Path.Combine(Path.GetTempPath(), "novolis-pdf-strip-cid-unflip.png"));
+            new PdfRenderRequest(0, 72));
+        using var image = SKImage.FromEncodedData(rendered.PngBytes);
+        using var bitmap = SKBitmap.FromImage(image);
+        var (top, bottom) = InkInVerticalHalves(bitmap);
 
-        await Assert.That(File.Exists(dumpPath)).IsTrue();
-    }
-
-    private static SKTypeface ResolveDumpTypeface(
-        PdfParsedDocument document,
-        PdfTextCommand command,
-        PdfFontResource? font,
-        Dictionary<string, SKTypeface> cache)
-    {
-        var key = font?.BaseFont?.Value ?? command.FontName ?? "default";
-        if (cache.TryGetValue(key, out var cached))
-            return cached;
-        SKTypeface? typeface = null;
-        if (font?.ResolveEmbeddedFontProgram() is { } program)
-        {
-            var bytes = PdfStreamDecoder.Decode(program, PdfLimits.Default);
-            typeface = SKTypeface.FromStream(new MemoryStream(bytes, writable: false));
-        }
-
-        typeface ??= SKTypeface.Default;
-        cache[key] = typeface;
-        return typeface;
-    }
-
-    private static void RenderGlyphStrip(
-        PdfParsedDocument document,
-        PdfResolvedPage page,
-        IReadOnlyList<PdfTextCommand> commands,
-        Dictionary<string, SKTypeface> typefaces,
-        bool unflip,
-        bool identityFirst,
-        string path)
-    {
-        using var bitmap = new SKBitmap(900, 160, SKColorType.Rgba8888, SKAlphaType.Premul);
-        using var canvas = new SKCanvas(bitmap);
-        canvas.Clear(SKColors.White);
-        using var paint = new SKPaint { Color = SKColors.Black, IsAntialias = true, Style = SKPaintStyle.Fill };
-        var x = 16f;
-        foreach (var command in commands.Take(28))
-        {
-            var fontResource = page.Resources is { } resources
-                ? new PdfResourceDictionary(document, resources).ResolveFont(command.FontName)
-                : null;
-            var decoded = PdfFontDecoder.Decode(document, page, command);
-            var typeface = ResolveDumpTypeface(document, command, fontResource, typefaces);
-            using var font = new SKFont(typeface, 36);
-            PdfFontDecoder.TryReadIdentityGlyphs(command, fontResource, out var identity);
-            var glyphs = identityFirst
-                && identity.Length > 0
-                && identity.All(glyph => glyph < typeface.GlyphCount)
-                ? identity
-                : font.GetGlyphs(decoded.Text);
-            if (glyphs.Length == 0)
-                continue;
-            canvas.Save();
-            canvas.Translate(x, unflip ? 50 : 110);
-            if (unflip)
-                canvas.Scale(1, -1);
-            using var builder = new SKTextBlobBuilder();
-            builder.AddHorizontalRun(glyphs, font, [0f], 0);
-            using var blob = builder.Build();
-            if (blob is not null)
-                canvas.DrawText(blob, 0, 0, paint);
-            canvas.Restore();
-            x += 28;
-        }
-
-        using var image = SKImage.FromBitmap(bitmap);
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        File.WriteAllBytes(path, data.ToArray());
+        await Assert.That(rendered.Status is PdfRenderStatus.Rendered or PdfRenderStatus.Partial).IsTrue();
+        await Assert.That(top + bottom).IsGreaterThan(20);
+        await Assert.That(top).IsGreaterThan(bottom);
     }
 
     [Test]
@@ -287,6 +162,49 @@ public sealed class NovolisGeneratedPdfTests
         }
 
         return stream.ToArray();
+    }
+
+    private static (int Top, int Bottom) InkInVerticalHalves(SKBitmap bitmap)
+    {
+        var minX = bitmap.Width;
+        var minY = bitmap.Height;
+        var maxX = 0;
+        var maxY = 0;
+        for (var y = 0; y < bitmap.Height; y++)
+        {
+            for (var x = 0; x < bitmap.Width; x++)
+            {
+                var color = bitmap.GetPixel(x, y);
+                if (color.Red > 240 && color.Green > 240 && color.Blue > 240)
+                    continue;
+                minX = System.Math.Min(minX, x);
+                minY = System.Math.Min(minY, y);
+                maxX = System.Math.Max(maxX, x);
+                maxY = System.Math.Max(maxY, y);
+            }
+        }
+
+        if (maxY <= minY)
+            return (0, 0);
+
+        var midY = minY + ((maxY - minY) / 2);
+        var top = 0;
+        var bottom = 0;
+        for (var y = minY; y <= maxY; y++)
+        {
+            for (var x = minX; x <= maxX; x++)
+            {
+                var color = bitmap.GetPixel(x, y);
+                if (color.Red > 240 && color.Green > 240 && color.Blue > 240)
+                    continue;
+                if (y < midY)
+                    top++;
+                else
+                    bottom++;
+            }
+        }
+
+        return (top, bottom);
     }
 
     private static string BuildCalypsoDump(

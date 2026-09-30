@@ -248,10 +248,14 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         paint.Color = ToColor(command.Color);
         var view = PdfSkiaCanvas.FromSkia(canvas.TotalMatrix);
         canvas.Save();
-        canvas.SetMatrix(PdfSkiaCanvas.ToSkia(view.Multiply(command.TextRenderingMatrix)));
+        canvas.SetMatrix(PdfSkiaCanvas.ToSkia(TextBlobMatrix(view, command.TextRenderingMatrix)));
         DrawGlyphs(canvas, paint, font, glyphs, advances);
         canvas.Restore();
     }
+
+    // SKTextBlob is Y-down; Trm+view already include the PDF Y-up flip.
+    private static PdfMatrix TextBlobMatrix(PdfMatrix view, PdfMatrix textRenderingMatrix) =>
+        view.Multiply(textRenderingMatrix).Multiply(new PdfMatrix(1, 0, 0, -1, 0, 0));
 
     private static float[] PdfAdvances(PdfTextCommand command, PdfFontResource? font, int glyphCount)
     {
