@@ -10,8 +10,7 @@ namespace Novolis.Pdf.Unit;
 
 public sealed class NovolisGeneratedPdfTests
 {
-    private const string CalypsoExportPath =
-        @"C:\Users\frank\Downloads\the-calypso-cycle-calypso (9).pdf";
+    private static readonly string? CalypsoExportPath = PublishedBooksPdf.TryResolveCalypso();
 
     [Test]
     public async Task ExtractsUnicodeFromSkiaIdentityHPdf()
@@ -47,9 +46,9 @@ public sealed class NovolisGeneratedPdfTests
     }
 
     [Test]
-    public async Task CalypsoPageTwoSurvivesEarlierPageFontCache()
+    public async Task CalypsoAuthorsNoteSurvivesEarlierPageFontCache()
     {
-        if (!File.Exists(CalypsoExportPath))
+        if (CalypsoExportPath is null)
             return;
 
         await using var source = PdfSources.FromStream(
@@ -57,23 +56,23 @@ public sealed class NovolisGeneratedPdfTests
             Path.GetFileName(CalypsoExportPath),
             CalypsoExportPath);
         var document = await PdfParser.ParseAsync(source);
-        var pages = PdfPageTree.Resolve(document);
-        if (pages.Count <= 2)
+        var notePage = FindPageIndex(document, "Author's Note");
+        if (notePage < 0)
             return;
 
-        var isolated = await new PdfSkiaPageRenderer().RenderAsync(document, new PdfRenderRequest(2, 72));
+        var isolated = await new PdfSkiaPageRenderer().RenderAsync(document, new PdfRenderRequest(notePage, 72));
         var shared = new PdfSkiaPageRenderer();
         _ = await shared.RenderAsync(document, new PdfRenderRequest(0, 72));
-        var afterCover = await shared.RenderAsync(document, new PdfRenderRequest(2, 72));
+        var afterCover = await shared.RenderAsync(document, new PdfRenderRequest(notePage, 72));
 
         await Assert.That(afterCover.PngBytes.Length).IsGreaterThan(1000);
         await Assert.That(afterCover.PngBytes.SequenceEqual(isolated.PngBytes)).IsTrue();
     }
 
     [Test]
-    public async Task CalypsoPageTwoAuthorsNoteMatchesUnicode()
+    public async Task CalypsoAuthorsNoteMatchesUnicode()
     {
-        if (!File.Exists(CalypsoExportPath))
+        if (CalypsoExportPath is null)
             return;
 
         await using var source = PdfSources.FromStream(
@@ -82,25 +81,23 @@ public sealed class NovolisGeneratedPdfTests
             CalypsoExportPath);
         var document = await PdfParser.ParseAsync(source);
         var pages = PdfPageTree.Resolve(document);
-        if (pages.Count <= 2)
+        var notePage = FindPageIndex(document, "Author's Note");
+        if (notePage < 0 || notePage >= pages.Count)
             return;
 
-        var pageTwo = string.Concat(
-            new PdfTextExtractor().ExtractDocument(document)
-                .Where(static span => span.PageIndex == 2)
-                .Select(static span => span.Text));
+        var noteText = PageText(document, notePage);
         var rendered = await new PdfSkiaPageRenderer().RenderAsync(
             document,
-            new PdfRenderRequest(2, 72));
-        var decoded = PdfContentStreamInterpreter.BuildPlan(document, pages[2])
+            new PdfRenderRequest(notePage, 72));
+        var decoded = PdfContentStreamInterpreter.BuildPlan(document, pages[notePage])
             .Commands
             .OfType<PdfTextCommand>()
-            .Select(command => PdfFontDecoder.Decode(document, pages[2], command))
+            .Select(command => PdfFontDecoder.Decode(document, pages[notePage], command))
             .Where(static item => item.FromToUnicode)
             .ToArray();
 
-        await Assert.That(pageTwo).Contains("Author's Note");
-        await Assert.That(pageTwo.Contains("Author's Notee", StringComparison.Ordinal)).IsFalse();
+        await Assert.That(noteText).Contains("Author's Note");
+        await Assert.That(noteText.Contains("Author's Notee", StringComparison.Ordinal)).IsFalse();
         await Assert.That(rendered.Status is PdfRenderStatus.Rendered or PdfRenderStatus.Partial).IsTrue();
         await Assert.That(rendered.PngBytes.Length).IsGreaterThan(1000);
         await Assert.That(decoded.Length).IsGreaterThan(0);
@@ -108,9 +105,35 @@ public sealed class NovolisGeneratedPdfTests
     }
 
     [Test]
+    public async Task ReadsEachPrintedBookFirstPage()
+    {
+        var printed = PublishedBooksPdf.EnumeratePrintedBookPdfs().ToArray();
+        if (printed.Length == 0)
+            return;
+
+        foreach (var path in printed)
+        {
+            await using var source = PdfSources.FromStream(
+                File.OpenRead(path),
+                Path.GetFileName(path),
+                path);
+            var document = await PdfParser.ParseAsync(source);
+            var pages = PdfPageTree.Resolve(document);
+            await Assert.That(pages.Count).IsGreaterThan(0).Because(path);
+            var rendered = await new PdfSkiaPageRenderer().RenderAsync(
+                document,
+                new PdfRenderRequest(0, 72));
+            await Assert.That(rendered.Status is PdfRenderStatus.Rendered or PdfRenderStatus.Partial)
+                .IsTrue()
+                .Because(path);
+            await Assert.That(rendered.PngBytes.Length).IsGreaterThan(500).Because(path);
+        }
+    }
+
+    [Test]
     public async Task ReadsNovolisExportedCalypsoPdf()
     {
-        if (!File.Exists(CalypsoExportPath))
+        if (CalypsoExportPath is null)
             return;
 
         await using var source = PdfSources.FromStream(
@@ -154,23 +177,37 @@ public sealed class NovolisGeneratedPdfTests
             .IsTrue();
         await Assert.That(rendered.Status is PdfRenderStatus.Rendered or PdfRenderStatus.Partial).IsTrue();
         await Assert.That(rendered.PngBytes.Length).IsGreaterThan(1000);
-        if (pages.Count > 2)
+        var notePage = FindPageIndex(document, "Author's Note");
+        if (notePage >= 0)
         {
-            var pageTwo = string.Concat(
-                extractor.ExtractDocument(document)
-                    .Where(static span => span.PageIndex == 2)
-                    .Select(static span => span.Text));
-            await Assert.That(pageTwo).Contains("Author");
-            var note = await new PdfSkiaPageRenderer().RenderAsync(document, new PdfRenderRequest(2, 72));
+            await Assert.That(PageText(document, notePage)).Contains("Author");
+            var note = await new PdfSkiaPageRenderer().RenderAsync(document, new PdfRenderRequest(notePage, 72));
             await Assert.That(note.PngBytes.Length).IsGreaterThan(1000);
-            var plan = PdfContentStreamInterpreter.BuildPlan(document, pages[2]);
+            var plan = PdfContentStreamInterpreter.BuildPlan(document, pages[notePage]);
             var decoded = plan.Commands.OfType<PdfTextCommand>()
-                .Select(command => PdfFontDecoder.Decode(document, pages[2], command))
+                .Select(command => PdfFontDecoder.Decode(document, pages[notePage], command))
                 .First(static item => item.FromToUnicode);
             await Assert.That(decoded.FromToUnicode).IsTrue();
             await Assert.That(decoded.Text.Length).IsGreaterThan(0);
         }
     }
+
+    private static int FindPageIndex(PdfParsedDocument document, string needle)
+    {
+        foreach (var span in new PdfTextExtractor().ExtractDocument(document))
+        {
+            if (span.Text.Contains(needle, StringComparison.Ordinal))
+                return span.PageIndex;
+        }
+
+        return -1;
+    }
+
+    private static string PageText(PdfParsedDocument document, int pageIndex) =>
+        string.Concat(
+            new PdfTextExtractor().ExtractDocument(document)
+                .Where(span => span.PageIndex == pageIndex)
+                .Select(static span => span.Text));
 
     private static byte[] BuildSkiaIdentityPdf(string text)
     {

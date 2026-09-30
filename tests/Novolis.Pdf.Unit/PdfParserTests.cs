@@ -4,11 +4,34 @@ using Novolis.Pdf.Abstractions;
 using Novolis.Pdf.Core;
 using Novolis.Pdf.Parsing;
 using Novolis.Pdf.Rendering;
+using Novolis.Pdf.Text;
 
 namespace Novolis.Pdf.Unit;
 
 public sealed class PdfParserTests
 {
+    [Test]
+    public async Task DocumentsOutlineSampleExposesChapterBookmarks()
+    {
+        var path = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".novolis", "artifacts", "toc-outline", "sample.pdf");
+        if (!File.Exists(path))
+            return;
+
+        await using var source = PdfSources.OpenFile(path);
+        var document = await PdfParser.ParseAsync(source);
+        var outlines = new PdfNavigationExtractor().ExtractOutlines(document);
+
+        await Assert.That(outlines.Count).IsGreaterThanOrEqualTo(3);
+        await Assert.That(outlines[0].Title).IsEqualTo("Contents");
+        var sectionOne = outlines.First(item => item.Title == "Section One");
+        var sectionTwo = outlines.First(item => item.Title == "Section Two");
+        await Assert.That(sectionOne.PageIndex).IsNotNull();
+        await Assert.That(sectionTwo.PageIndex).IsNotNull();
+        await Assert.That(sectionOne.PageIndex!.Value).IsGreaterThan(outlines[0].PageIndex!.Value);
+    }
+
     [Test]
     public async Task ParsesTypedObjectsAndClassicXref()
     {

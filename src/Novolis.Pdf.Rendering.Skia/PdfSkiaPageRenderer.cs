@@ -53,30 +53,13 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
 
         var page = pages[request.PageIndex];
         var plan = _plans.Get(document, page, _limits);
-        var displayInfo = page.Info with
-        {
-            Rotation = page.Info.Rotation + request.Rotation,
-        };
-        var scale = request.DotsPerInch / 72d * System.Math.Max(0.01, page.Info.UserUnit);
-        var width = System.Math.Clamp((int)System.Math.Ceiling(displayInfo.DisplayWidth * scale), 1, 16_384);
-        var height = System.Math.Clamp((int)System.Math.Ceiling(displayInfo.DisplayHeight * scale), 1, 16_384);
-        var view = PdfViewportTransform.Raster(displayInfo.DisplayHeight, request.DotsPerInch * page.Info.UserUnit);
-
-        using var bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
-        using var canvas = new SKCanvas(bitmap);
-        Paint(canvas, document, page, plan, view, cancellationToken);
-        using var image = SKImage.FromBitmap(bitmap);
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        var status = plan.Diagnostics.Any(static diagnostic => diagnostic.Severity == PdfDiagnosticSeverity.Error)
-            ? PdfRenderStatus.Failed
-            : plan.Diagnostics.Count > 0 ? PdfRenderStatus.Partial : PdfRenderStatus.Rendered;
-        return ValueTask.FromResult(new PdfRenderedPage(
-            request.PageIndex,
-            width,
-            height,
-            data.ToArray(),
-            status,
-            plan.Diagnostics));
+        var native = page.Info;
+        var scale = request.DotsPerInch / 72d * System.Math.Max(0.01, native.UserUnit);
+        var width = System.Math.Clamp((int)System.Math.Ceiling(native.DisplayWidth * scale), 1, 16_384);
+        var height = System.Math.Clamp((int)System.Math.Ceiling(native.DisplayHeight * scale), 1, 16_384);
+        var view = PdfViewportTransform.Raster(native.DisplayHeight, request.DotsPerInch * native.UserUnit);
+        return ValueTask.FromResult(
+            Rasterize(document, page, plan, view, width, height, request.Rotation, cancellationToken));
     }
 
     /// <summary>Paints a page into an existing canvas using a PDF→device view matrix.</summary>
@@ -127,19 +110,22 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(page);
         var plan = _plans.Get(document, page, _limits);
-        var info = page.Info with { Rotation = page.Info.Rotation + rotation };
-        var width = System.Math.Clamp(viewportWidth, 1, 16_384);
-        var height = System.Math.Clamp(viewportHeight, 1, 16_384);
+        var native = page.Info;
+        var viewRotation = NormalizeRotation(rotation);
+        var cellWidth = System.Math.Clamp(viewportWidth, 1, 16_384);
+        var cellHeight = System.Math.Clamp(viewportHeight, 1, 16_384);
+        var paintWidth = viewRotation is 90 or 270 ? cellHeight : cellWidth;
+        var paintHeight = viewRotation is 90 or 270 ? cellWidth : cellHeight;
         var view = PdfViewportTransform.FitPage(
-            info.DisplayWidth,
-            info.DisplayHeight,
-            width,
-            height,
+            native.DisplayWidth,
+            native.DisplayHeight,
+            paintWidth,
+            paintHeight,
             zoom);
-        return Rasterize(document, page, plan, view, width, height, cancellationToken);
+        return Rasterize(document, page, plan, view, paintWidth, paintHeight, viewRotation, cancellationToken);
     }
 
-    /// <summary>Paints a page into a bitmap that exactly matches the page cell size.</summary>
+    /// <summary>Paints a page into a bitmap using a uniform fit (no X/Y stretch).</summary>
     public PdfRenderedPage RenderScaled(
         PdfParsedDocument document,
         PdfResolvedPage page,
@@ -151,15 +137,19 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(page);
         var plan = _plans.Get(document, page, _limits);
-        var info = page.Info with { Rotation = page.Info.Rotation + rotation };
-        var width = System.Math.Clamp(pixelWidth, 1, 16_384);
-        var height = System.Math.Clamp(pixelHeight, 1, 16_384);
-        var view = PdfViewportTransform.Stretch(
-            info.DisplayWidth,
-            info.DisplayHeight,
-            width,
-            height);
-        return Rasterize(document, page, plan, view, width, height, cancellationToken);
+        var native = page.Info;
+        var viewRotation = NormalizeRotation(rotation);
+        var cellWidth = System.Math.Clamp(pixelWidth, 1, 16_384);
+        var cellHeight = System.Math.Clamp(pixelHeight, 1, 16_384);
+        var paintWidth = viewRotation is 90 or 270 ? cellHeight : cellWidth;
+        var paintHeight = viewRotation is 90 or 270 ? cellWidth : cellHeight;
+        var view = PdfViewportTransform.FitPage(
+            native.DisplayWidth,
+            native.DisplayHeight,
+            paintWidth,
+            paintHeight,
+            zoom: 1);
+        return Rasterize(document, page, plan, view, paintWidth, paintHeight, viewRotation, cancellationToken);
     }
 
     private PdfRenderedPage Rasterize(
@@ -169,18 +159,61 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         PdfMatrix view,
         int width,
         int height,
+        int viewRotation,
         CancellationToken cancellationToken)
     {
         using var bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
-        using var canvas = new SKCanvas(bitmap);
-        Paint(canvas, document, page, plan, view, cancellationToken);
-        using var image = SKImage.FromBitmap(bitmap);
+        using (var canvas = new SKCanvas(bitmap))
+            Paint(canvas, document, page, plan, view, cancellationToken);
+
+        using var oriented = Orient(bitmap, viewRotation);
+        using var image = SKImage.FromBitmap(oriented);
         using var data = image.Encode(SKEncodedImageFormat.Png, 100);
         var status = plan.Diagnostics.Any(static diagnostic => diagnostic.Severity == PdfDiagnosticSeverity.Error)
             ? PdfRenderStatus.Failed
             : plan.Diagnostics.Count > 0 ? PdfRenderStatus.Partial : PdfRenderStatus.Rendered;
-        return new PdfRenderedPage(page.Info.Index, width, height, data.ToArray(), status, plan.Diagnostics);
+        return new PdfRenderedPage(
+            page.Info.Index,
+            oriented.Width,
+            oriented.Height,
+            data.ToArray(),
+            status,
+            plan.Diagnostics);
     }
+
+    private static SKBitmap Orient(SKBitmap source, int rotation)
+    {
+        var degrees = NormalizeRotation(rotation);
+        if (degrees == 0)
+            return source.Copy() ?? source;
+
+        var dest = degrees is 90 or 270
+            ? new SKBitmap(source.Height, source.Width, SKColorType.Rgba8888, SKAlphaType.Premul)
+            : new SKBitmap(source.Width, source.Height, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using var canvas = new SKCanvas(dest);
+        canvas.Clear(SKColors.White);
+        switch (degrees)
+        {
+            case 90:
+                canvas.Translate(dest.Width, 0);
+                canvas.RotateDegrees(90);
+                break;
+            case 180:
+                canvas.Translate(dest.Width, dest.Height);
+                canvas.RotateDegrees(180);
+                break;
+            case 270:
+                canvas.Translate(0, dest.Height);
+                canvas.RotateDegrees(270);
+                break;
+        }
+
+        canvas.DrawBitmap(source, 0, 0);
+        return dest;
+    }
+
+    private static int NormalizeRotation(int rotation) =>
+        ((rotation % 360) + 360) % 360;
 
     private static void DrawPath(SKCanvas canvas, SKPaint paint, PdfPathCommand command)
     {
