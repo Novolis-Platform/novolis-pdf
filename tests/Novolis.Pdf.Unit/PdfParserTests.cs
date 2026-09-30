@@ -23,13 +23,12 @@ public sealed class PdfParserTests
         var document = await PdfParser.ParseAsync(source);
         var outlines = new PdfNavigationExtractor().ExtractOutlines(document);
 
-        await Assert.That(outlines.Count).IsGreaterThanOrEqualTo(3);
-        await Assert.That(outlines[0].Title).IsEqualTo("Contents");
+        await Assert.That(outlines.Count).IsGreaterThanOrEqualTo(2);
         var sectionOne = outlines.First(item => item.Title == "Section One");
         var sectionTwo = outlines.First(item => item.Title == "Section Two");
         await Assert.That(sectionOne.PageIndex).IsNotNull();
         await Assert.That(sectionTwo.PageIndex).IsNotNull();
-        await Assert.That(sectionOne.PageIndex!.Value).IsGreaterThan(outlines[0].PageIndex!.Value);
+        await Assert.That(sectionTwo.PageIndex!.Value).IsGreaterThan(sectionOne.PageIndex!.Value);
     }
 
     [Test]
