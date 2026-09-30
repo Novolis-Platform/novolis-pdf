@@ -1,0 +1,343 @@
+using Novolis.Pdf.Abstractions;
+using Novolis.Pdf.Parsing;
+using Novolis.Pdf.Rendering;
+using Novolis.Pdf.Text;
+using SkiaSharp;
+
+namespace Novolis.Pdf.Rendering.Skia;
+
+/// <summary>Skia painter that applies PDF text rendering matrices onto a live canvas.</summary>
+public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
+{
+    private readonly PdfLimits _limits;
+    private readonly PdfPagePlanCache _plans = new();
+    private readonly Dictionary<string, SKTypeface> _typefaces = new(StringComparer.Ordinal);
+    private readonly List<SKData> _fontData = [];
+    private readonly List<MemoryStream> _fontPrograms = [];
+
+    /// <summary>Creates a renderer with bounded resource limits.</summary>
+    public PdfSkiaPageRenderer(PdfLimits? limits = null)
+    {
+        _limits = limits ?? PdfLimits.Default;
+        _limits.Validate();
+    }
+
+    /// <inheritdoc />
+    public ValueTask<PdfRenderedPage> RenderAsync(
+        PdfParsedDocument document,
+        PdfRenderRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(request);
+        request.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var pages = PdfPageTree.Resolve(document, _limits);
+        if (request.PageIndex >= pages.Count)
+        {
+            return ValueTask.FromResult(new PdfRenderedPage(
+                request.PageIndex,
+                1,
+                1,
+                EmptyPixelPng(),
+                PdfRenderStatus.Failed,
+                [
+                    new PdfDiagnosticEntry(
+                        PdfDiagnosticSeverity.Error,
+                        "PDF040",
+                        $"Page index {request.PageIndex} is outside the document page range."),
+                ]));
+        }
+
+        var page = pages[request.PageIndex];
+        var plan = _plans.Get(document, page, _limits);
+        var displayInfo = page.Info with
+        {
+            Rotation = page.Info.Rotation + request.Rotation,
+        };
+        var scale = request.DotsPerInch / 72d * System.Math.Max(0.01, page.Info.UserUnit);
+        var width = System.Math.Clamp((int)System.Math.Ceiling(displayInfo.DisplayWidth * scale), 1, 16_384);
+        var height = System.Math.Clamp((int)System.Math.Ceiling(displayInfo.DisplayHeight * scale), 1, 16_384);
+        var view = PdfViewportTransform.Raster(displayInfo.DisplayHeight, request.DotsPerInch * page.Info.UserUnit);
+
+        using var bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using var canvas = new SKCanvas(bitmap);
+        Paint(canvas, document, page, plan, view, cancellationToken);
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        var status = plan.Diagnostics.Any(static diagnostic => diagnostic.Severity == PdfDiagnosticSeverity.Error)
+            ? PdfRenderStatus.Failed
+            : plan.Diagnostics.Count > 0 ? PdfRenderStatus.Partial : PdfRenderStatus.Rendered;
+        return ValueTask.FromResult(new PdfRenderedPage(
+            request.PageIndex,
+            width,
+            height,
+            data.ToArray(),
+            status,
+            plan.Diagnostics));
+    }
+
+    /// <summary>Paints a page into an existing canvas using a PDF→device view matrix.</summary>
+    public void Paint(
+        SKCanvas canvas,
+        PdfParsedDocument document,
+        PdfResolvedPage page,
+        PdfPageRenderPlan plan,
+        PdfMatrix view,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(canvas);
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(page);
+        ArgumentNullException.ThrowIfNull(plan);
+
+        canvas.Clear(SKColors.White);
+        canvas.Save();
+        canvas.SetMatrix(PdfSkiaCanvas.ToSkia(view));
+        using var paint = new SKPaint { IsAntialias = true };
+        foreach (var command in plan.Commands)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            switch (command)
+            {
+                case PdfPathCommand path:
+                    DrawPath(canvas, paint, path);
+                    break;
+                case PdfTextCommand text:
+                    DrawText(canvas, paint, document, page, text);
+                    break;
+            }
+        }
+
+        canvas.Restore();
+    }
+
+    /// <summary>Paints the current page into a viewport-sized bitmap (zoom is a view transform).</summary>
+    public PdfRenderedPage RenderViewport(
+        PdfParsedDocument document,
+        PdfResolvedPage page,
+        int viewportWidth,
+        int viewportHeight,
+        double zoom,
+        int rotation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(page);
+        var plan = _plans.Get(document, page, _limits);
+        var info = page.Info with { Rotation = page.Info.Rotation + rotation };
+        var width = System.Math.Clamp(viewportWidth, 1, 16_384);
+        var height = System.Math.Clamp(viewportHeight, 1, 16_384);
+        var view = PdfViewportTransform.FitPage(
+            info.DisplayWidth,
+            info.DisplayHeight,
+            width,
+            height,
+            zoom);
+        return Rasterize(document, page, plan, view, width, height, cancellationToken);
+    }
+
+    /// <summary>Paints a page into a bitmap that exactly matches the page cell size.</summary>
+    public PdfRenderedPage RenderScaled(
+        PdfParsedDocument document,
+        PdfResolvedPage page,
+        int pixelWidth,
+        int pixelHeight,
+        int rotation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(page);
+        var plan = _plans.Get(document, page, _limits);
+        var info = page.Info with { Rotation = page.Info.Rotation + rotation };
+        var width = System.Math.Clamp(pixelWidth, 1, 16_384);
+        var height = System.Math.Clamp(pixelHeight, 1, 16_384);
+        var view = PdfViewportTransform.Stretch(
+            info.DisplayWidth,
+            info.DisplayHeight,
+            width,
+            height);
+        return Rasterize(document, page, plan, view, width, height, cancellationToken);
+    }
+
+    private PdfRenderedPage Rasterize(
+        PdfParsedDocument document,
+        PdfResolvedPage page,
+        PdfPageRenderPlan plan,
+        PdfMatrix view,
+        int width,
+        int height,
+        CancellationToken cancellationToken)
+    {
+        using var bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using var canvas = new SKCanvas(bitmap);
+        Paint(canvas, document, page, plan, view, cancellationToken);
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        var status = plan.Diagnostics.Any(static diagnostic => diagnostic.Severity == PdfDiagnosticSeverity.Error)
+            ? PdfRenderStatus.Failed
+            : plan.Diagnostics.Count > 0 ? PdfRenderStatus.Partial : PdfRenderStatus.Rendered;
+        return new PdfRenderedPage(page.Info.Index, width, height, data.ToArray(), status, plan.Diagnostics);
+    }
+
+    private static void DrawPath(SKCanvas canvas, SKPaint paint, PdfPathCommand command)
+    {
+        using var path = new SKPath();
+        for (var index = 0; index < command.Points.Count; index++)
+        {
+            var point = command.Points[index];
+            if (index == 0)
+                path.MoveTo((float)point.X, (float)point.Y);
+            else
+                path.LineTo((float)point.X, (float)point.Y);
+        }
+
+        if (command.Closed)
+            path.Close();
+
+        if (command.Fill)
+        {
+            paint.Style = SKPaintStyle.Fill;
+            paint.Color = ToColor(command.FillColor);
+            canvas.DrawPath(path, paint);
+        }
+
+        if (command.Stroke)
+        {
+            paint.Style = SKPaintStyle.Stroke;
+            paint.StrokeWidth = (float)System.Math.Max(0.1, command.StrokeWidth);
+            paint.Color = ToColor(command.StrokeColor);
+            canvas.DrawPath(path, paint);
+        }
+    }
+
+    private void DrawText(
+        SKCanvas canvas,
+        SKPaint paint,
+        PdfParsedDocument document,
+        PdfResolvedPage page,
+        PdfTextCommand command)
+    {
+        var fontResource = page.Resources is { } resources
+            ? new PdfResourceDictionary(document, resources).ResolveFont(command.FontName)
+            : null;
+        var decoded = PdfFontDecoder.Decode(document, page, command, _limits);
+        if (decoded.Text.Length > 0 && string.IsNullOrWhiteSpace(decoded.Text))
+            return;
+
+        var typeface = ResolveTypeface(document, command, fontResource);
+        using var font = new SKFont(typeface, 1);
+        ushort[] glyphs;
+        if (decoded.FromToUnicode
+            && !string.IsNullOrEmpty(decoded.Text)
+            && !decoded.Text.All(static value => value == '\uFFFD'))
+        {
+            glyphs = font.GetGlyphs(decoded.Text);
+            if (glyphs.Length == 0 || glyphs.All(static glyph => glyph == 0))
+                return;
+        }
+        else if (!PdfFontDecoder.TryReadIdentityGlyphs(command, fontResource, out glyphs)
+                 || glyphs.Length == 0)
+        {
+            return;
+        }
+
+        var advances = PdfAdvances(command, fontResource, glyphs.Length);
+        paint.Style = SKPaintStyle.Fill;
+        paint.Color = ToColor(command.Color);
+        var view = PdfSkiaCanvas.FromSkia(canvas.TotalMatrix);
+        canvas.Save();
+        canvas.SetMatrix(PdfSkiaCanvas.ToSkia(view.Multiply(command.TextRenderingMatrix)));
+        DrawGlyphs(canvas, paint, font, glyphs, advances);
+        canvas.Restore();
+    }
+
+    private static float[] PdfAdvances(PdfTextCommand command, PdfFontResource? font, int glyphCount)
+    {
+        var raw = command.EncodedBytes ?? [];
+        var identity = font is { IsType0: true } || font is { IsIdentityEncoding: true };
+        var step = identity ? 2 : 1;
+        var advances = new float[System.Math.Max(1, glyphCount)];
+        if (font is null || raw.Length < step)
+            return advances;
+
+        var x = 0f;
+        var index = 0;
+        for (var offset = 0; offset + step <= raw.Length && index < advances.Length; offset += step)
+        {
+            advances[index] = x;
+            var code = identity
+                ? (raw[offset] << 8) | raw[offset + 1]
+                : raw[offset];
+            x += (float)(font.WidthForCode(code) / 1000d);
+            index++;
+        }
+
+        return advances;
+    }
+
+    private static void DrawGlyphs(
+        SKCanvas canvas,
+        SKPaint paint,
+        SKFont font,
+        ushort[] glyphs,
+        float[] xs)
+    {
+        var positions = xs.Length == glyphs.Length ? xs : new float[glyphs.Length];
+        using var builder = new SKTextBlobBuilder();
+        builder.AddHorizontalRun(glyphs, font, positions, 0);
+        using var blob = builder.Build();
+        if (blob is not null)
+            canvas.DrawText(blob, 0, 0, paint);
+    }
+
+    private SKTypeface ResolveTypeface(
+        PdfParsedDocument document,
+        PdfTextCommand command,
+        PdfFontResource? font)
+    {
+        var key = font?.BaseFont?.Value ?? command.FontName ?? "default";
+        if (_typefaces.TryGetValue(key, out var cached))
+            return cached;
+
+        SKTypeface? typeface = null;
+        if (font?.ResolveEmbeddedFontProgram() is { } program)
+        {
+            var bytes = PdfStreamDecoder.Decode(program, _limits);
+            var stream = new MemoryStream(bytes, writable: false);
+            _fontPrograms.Add(stream);
+            typeface = SKTypeface.FromStream(stream);
+            if (typeface is null)
+            {
+                var data = SKData.CreateCopy(bytes);
+                _fontData.Add(data);
+                typeface = SKTypeface.FromData(data);
+            }
+        }
+
+        typeface ??= SKTypeface.FromFamilyName(font?.FamilyName ?? "Times New Roman")
+            ?? SKTypeface.Default;
+        _typefaces[key] = typeface;
+        return typeface;
+    }
+
+    private static SKColor ToColor(PdfColor color)
+    {
+        var clamped = color.Clamp();
+        return new SKColor(
+            (byte)System.Math.Round(clamped.Red * 255),
+            (byte)System.Math.Round(clamped.Green * 255),
+            (byte)System.Math.Round(clamped.Blue * 255),
+            (byte)System.Math.Round(clamped.Alpha * 255));
+    }
+
+    private static byte[] EmptyPixelPng()
+    {
+        using var bitmap = new SKBitmap(1, 1);
+        bitmap.SetPixel(0, 0, SKColors.Transparent);
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        return data.ToArray();
+    }
+}

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Pdf.Platform</PackageId>
+    <RootNamespace>Novolis.Pdf.Platform</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Platform-neutral activation, document source, and local storage contracts for Novolis PDF hosts.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Novolis.Pdf.Abstractions\Novolis.Pdf.Abstractions.csproj" />
+    <ProjectReference Include="..\Novolis.Pdf.Documents\Novolis.Pdf.Documents.csproj" />
+  </ItemGroup>
+</Project>

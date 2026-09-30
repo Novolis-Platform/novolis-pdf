@@ -1,0 +1,36 @@
+{
+  "packages": {
+    "Novolis.Pdf.Abstractions": {
+      "path": "src/Novolis.Pdf.Abstractions/Novolis.Pdf.Abstractions.csproj",
+      "description": "UI-neutral PDF reader contracts"
+    },
+    "Novolis.Pdf.Core": {
+      "path": "src/Novolis.Pdf.Core/Novolis.Pdf.Core.csproj",
+      "description": "Document lifetime and reader orchestration"
+    },
+    "Novolis.Pdf.Parsing": {
+      "path": "src/Novolis.Pdf.Parsing/Novolis.Pdf.Parsing.csproj",
+      "description": "PDF syntax and object graph"
+    },
+    "Novolis.Pdf.Rendering": {
+      "path": "src/Novolis.Pdf.Rendering/Novolis.Pdf.Rendering.csproj",
+      "description": "Host-neutral page graphics"
+    },
+    "Novolis.Pdf.Rendering.Skia": {
+      "path": "src/Novolis.Pdf.Rendering.Skia/Novolis.Pdf.Rendering.Skia.csproj",
+      "description": "Skia page rasterizer"
+    },
+    "Novolis.Pdf.Text": {
+      "path": "src/Novolis.Pdf.Text/Novolis.Pdf.Text.csproj",
+      "description": "Text extraction, search, and outlines"
+    },
+    "Novolis.Pdf.Documents": {
+      "path": "src/Novolis.Pdf.Documents/Novolis.Pdf.Documents.csproj",
+      "description": "Local recent-document state"
+    },
+    "Novolis.Pdf.Platform": {
+      "path": "src/Novolis.Pdf.Platform/Novolis.Pdf.Platform.csproj",
+      "description": "Host activation and user-data paths"
+    }
+  }
+}

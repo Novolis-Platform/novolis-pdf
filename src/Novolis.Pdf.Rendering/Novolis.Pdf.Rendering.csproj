@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Pdf.Rendering</PackageId>
+    <RootNamespace>Novolis.Pdf.Rendering</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Host-neutral page graphics, transforms, and render-target contracts for Novolis PDF.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Novolis.Pdf.Abstractions\Novolis.Pdf.Abstractions.csproj" />
+    <ProjectReference Include="..\Novolis.Pdf.Parsing\Novolis.Pdf.Parsing.csproj" />
+    <LibraryReference Include="Novolis.Math.Geometry" />
+  </ItemGroup>
+</Project>

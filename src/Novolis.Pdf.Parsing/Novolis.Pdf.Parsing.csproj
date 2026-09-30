@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Pdf.Parsing</PackageId>
+    <RootNamespace>Novolis.Pdf.Parsing</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Ground-up PDF syntax, cross-reference, indirect-object, and stream parsing.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Novolis.Pdf.Abstractions\Novolis.Pdf.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

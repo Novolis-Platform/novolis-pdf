@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Pdf.Rendering.Skia</PackageId>
+    <RootNamespace>Novolis.Pdf.Rendering.Skia</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Contained Skia raster adapter for Novolis PDF page rendering.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
+    <ProjectReference Include="..\Novolis.Pdf.Abstractions\Novolis.Pdf.Abstractions.csproj" />
+    <ProjectReference Include="..\Novolis.Pdf.Parsing\Novolis.Pdf.Parsing.csproj" />
+    <ProjectReference Include="..\Novolis.Pdf.Rendering\Novolis.Pdf.Rendering.csproj" />
+    <ProjectReference Include="..\Novolis.Pdf.Text\Novolis.Pdf.Text.csproj" />
+  </ItemGroup>
+</Project>

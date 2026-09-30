@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Pdf.Text</PackageId>
+    <RootNamespace>Novolis.Pdf.Text</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>PDF text spans, search, selection geometry, and navigation extraction.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Novolis.Pdf.Abstractions\Novolis.Pdf.Abstractions.csproj" />
+    <ProjectReference Include="..\Novolis.Pdf.Parsing\Novolis.Pdf.Parsing.csproj" />
+    <ProjectReference Include="..\Novolis.Pdf.Rendering\Novolis.Pdf.Rendering.csproj" />
+  </ItemGroup>
+</Project>

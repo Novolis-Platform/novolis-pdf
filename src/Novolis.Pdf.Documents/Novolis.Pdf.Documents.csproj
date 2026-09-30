@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Pdf.Documents</PackageId>
+    <RootNamespace>Novolis.Pdf.Documents</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Local recent-document, reading-position, and cache records for Novolis PDF hosts.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Novolis.Pdf.Abstractions\Novolis.Pdf.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

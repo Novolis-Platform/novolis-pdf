@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Novolis.Pdf.Unit</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Novolis.Pdf.Abstractions/Novolis.Pdf.Abstractions.csproj" />
+    <ProjectReference Include="../../src/Novolis.Pdf.Core/Novolis.Pdf.Core.csproj" />
+    <ProjectReference Include="../../src/Novolis.Pdf.Parsing/Novolis.Pdf.Parsing.csproj" />
+    <ProjectReference Include="../../src/Novolis.Pdf.Rendering/Novolis.Pdf.Rendering.csproj" />
+    <ProjectReference Include="../../src/Novolis.Pdf.Rendering.Skia/Novolis.Pdf.Rendering.Skia.csproj" />
+    <ProjectReference Include="../../src/Novolis.Pdf.Text/Novolis.Pdf.Text.csproj" />
+    <ProjectReference Include="../../src/Novolis.Pdf.Documents/Novolis.Pdf.Documents.csproj" />
+    <ProjectReference Include="../../src/Novolis.Pdf.Platform/Novolis.Pdf.Platform.csproj" />
+  </ItemGroup>
+</Project>

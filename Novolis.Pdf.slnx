@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Novolis.Pdf.Abstractions/Novolis.Pdf.Abstractions.csproj" />
+    <Project Path="src/Novolis.Pdf.Core/Novolis.Pdf.Core.csproj" />
+    <Project Path="src/Novolis.Pdf.Parsing/Novolis.Pdf.Parsing.csproj" />
+    <Project Path="src/Novolis.Pdf.Rendering/Novolis.Pdf.Rendering.csproj" />
+    <Project Path="src/Novolis.Pdf.Rendering.Skia/Novolis.Pdf.Rendering.Skia.csproj" />
+    <Project Path="src/Novolis.Pdf.Text/Novolis.Pdf.Text.csproj" />
+    <Project Path="src/Novolis.Pdf.Documents/Novolis.Pdf.Documents.csproj" />
+    <Project Path="src/Novolis.Pdf.Platform/Novolis.Pdf.Platform.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Novolis.Pdf.Unit/Novolis.Pdf.Unit.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Pdf.Abstractions</PackageId>
+    <RootNamespace>Novolis.Pdf.Abstractions</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>UI-neutral contracts and records for Novolis PDF reading.</Description>
+  </PropertyGroup>
+</Project>

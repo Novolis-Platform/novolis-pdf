@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Novolis.Pdf.Core</PackageId>
+    <RootNamespace>Novolis.Pdf.Core</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Reader lifetime, limits, lazy object access, and orchestration for Novolis PDF.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Novolis.Pdf.Abstractions\Novolis.Pdf.Abstractions.csproj" />
+    <ProjectReference Include="..\Novolis.Pdf.Parsing\Novolis.Pdf.Parsing.csproj" />
+  </ItemGroup>
+</Project>
