@@ -1,9 +1,7 @@
 <!-- novolis-pkg-brand:start -->
-<p align="center">
-  <a href="https://github.com/Novolis-Platform/novolis-pdf">
-    <img src="https://raw.githubusercontent.com/Novolis-Platform/.github/main/brand/logo-icon.svg" width="72" alt="Novolis"/>
-  </a>
-</p>
+[![Novolis](https://raw.githubusercontent.com/Novolis-Platform/.github/main/brand/logo-icon.png)](https://novolis-platform.github.io/.github/novolis-pdf/)
+
+[Novolis](https://github.com/Novolis-Platform) · [Docs](https://novolis-platform.github.io/.github/novolis-pdf/) · [Source](https://github.com/Novolis-Platform/novolis-pdf)
 <!-- novolis-pkg-brand:end -->
 
 # Novolis.Pdf.Text
