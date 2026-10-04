@@ -206,7 +206,7 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
                 break;
         }
 
-        canvas.DrawBitmap(source, 0, 0);
+        canvas.DrawBitmap(source, 0, 0, new SKSamplingOptions(SKFilterMode.Linear));
         return dest;
     }
 
@@ -215,18 +215,20 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
 
     private static void DrawPath(SKCanvas canvas, SKPaint paint, PdfPathCommand command)
     {
-        using var path = new SKPath();
+        using var builder = new SKPathBuilder();
         for (var index = 0; index < command.Points.Count; index++)
         {
             var point = command.Points[index];
             if (index == 0)
-                path.MoveTo((float)point.X, (float)point.Y);
+                builder.MoveTo((float)point.X, (float)point.Y);
             else
-                path.LineTo((float)point.X, (float)point.Y);
+                builder.LineTo((float)point.X, (float)point.Y);
         }
 
         if (command.Closed)
-            path.Close();
+            builder.Close();
+
+        using var path = builder.Detach();
 
         if (command.Fill)
         {
