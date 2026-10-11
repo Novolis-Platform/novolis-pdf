@@ -121,6 +121,38 @@ public static class PdfContentStreamInterpreter
                     path.Add(ctm.Transform(new PdfPoint(line[0], line[1])));
                     operands.Clear();
                     break;
+                case "c":
+                    if (TryNumbers(operands, 6, out var curve))
+                        AddCubicBezier(path, ctm, curve[0], curve[1], curve[2], curve[3], curve[4], curve[5]);
+                    operands.Clear();
+                    break;
+                case "v":
+                    if (path.Count > 0 && TryNumbers(operands, 4, out var firstCurve))
+                    {
+                        AddCubicBezier(
+                            path,
+                            CurrentPoint(path),
+                            CurrentPoint(path),
+                            ctm.Transform(new PdfPoint(firstCurve[0], firstCurve[1])),
+                            ctm.Transform(new PdfPoint(firstCurve[2], firstCurve[3])));
+                    }
+                    operands.Clear();
+                    break;
+                case "y":
+                    if (TryNumbers(operands, 4, out var secondCurve))
+                    {
+                        AddCubicBezier(
+                            path,
+                            ctm,
+                            secondCurve[0],
+                            secondCurve[1],
+                            secondCurve[2],
+                            secondCurve[3],
+                            secondCurve[2],
+                            secondCurve[3]);
+                    }
+                    operands.Clear();
+                    break;
                 case "re" when TryNumbers(operands, 4, out var rectangle):
                     AddRectangle(path, ctm, rectangle);
                     closed = true;
@@ -128,6 +160,18 @@ public static class PdfContentStreamInterpreter
                     break;
                 case "h":
                     closed = true;
+                    operands.Clear();
+                    break;
+                case "W":
+                case "W*":
+                    // The first raster backend does not maintain a clip stack.
+                    // Discarding the pending path still keeps subsequent drawing
+                    // commands aligned with the content stream.
+                    operands.Clear();
+                    break;
+                case "n":
+                    path.Clear();
+                    closed = false;
                     operands.Clear();
                     break;
                 case "S":
@@ -170,6 +214,19 @@ public static class PdfContentStreamInterpreter
                     break;
                 case "G" when TryNumbers(operands, 1, out var grayStroke):
                     strokeColor = new PdfColor(grayStroke[0], grayStroke[0], grayStroke[0]);
+                    operands.Clear();
+                    break;
+                case "gs":
+                    // External graphics states affect opacity, line caps, and
+                    // other paint details that this backend does not model.
+                    operands.Clear();
+                    break;
+                case "BMC":
+                case "BDC":
+                case "EMC":
+                case "DP":
+                    // Marked content carries accessibility and extraction
+                    // metadata, not drawing commands.
                     operands.Clear();
                     break;
                 case "BT":
@@ -414,6 +471,55 @@ public static class PdfContentStreamInterpreter
         path.Add(matrix.Transform(new PdfPoint(x, y + height)));
     }
 
+    private static void AddCubicBezier(
+        ICollection<PdfPoint> path,
+        PdfMatrix matrix,
+        double control1X,
+        double control1Y,
+        double control2X,
+        double control2Y,
+        double endX,
+        double endY)
+    {
+        if (path.Count == 0)
+            return;
+        var start = path.Last();
+
+        AddCubicBezier(
+            path,
+            start,
+            matrix.Transform(new PdfPoint(control1X, control1Y)),
+            matrix.Transform(new PdfPoint(control2X, control2Y)),
+            matrix.Transform(new PdfPoint(endX, endY)));
+    }
+
+    private static void AddCubicBezier(
+        ICollection<PdfPoint> path,
+        PdfPoint start,
+        PdfPoint control1,
+        PdfPoint control2,
+        PdfPoint end)
+    {
+        const int segments = 12;
+        for (var index = 1; index <= segments; index++)
+        {
+            var t = index / (double)segments;
+            var inverse = 1 - t;
+            path.Add(new PdfPoint(
+                (inverse * inverse * inverse * start.X)
+                + (3 * inverse * inverse * t * control1.X)
+                + (3 * inverse * t * t * control2.X)
+                + (t * t * t * end.X),
+                (inverse * inverse * inverse * start.Y)
+                + (3 * inverse * inverse * t * control1.Y)
+                + (3 * inverse * t * t * control2.Y)
+                + (t * t * t * end.Y)));
+        }
+    }
+
+    private static PdfPoint CurrentPoint(IReadOnlyList<PdfPoint> path) =>
+        path.Count == 0 ? new PdfPoint(0, 0) : path[^1];
+
     private static bool TryNumbers(
         IReadOnlyList<PdfObject> operands,
         int count,
@@ -480,11 +586,34 @@ public static class PdfContentStreamInterpreter
             return _data[_position] switch
             {
                 (byte)'(' => new PdfStringObject(ReadLiteral()),
+                (byte)'<' when IsDictionaryStart() => ReadDictionary(depth + 1),
                 (byte)'<' => new PdfStringObject(ReadHex(), true),
                 (byte)'[' => ReadArray(depth + 1),
                 (byte)'/' => new PdfNameObject(ReadName()),
                 _ => ReadNumber(),
             };
+        }
+
+        private PdfDictionaryObject ReadDictionary(int depth)
+        {
+            _position += 2;
+            var values = new Dictionary<string, PdfObject>(StringComparer.Ordinal);
+            while (true)
+            {
+                SkipWhitespaceAndComments();
+                if (IsDictionaryEnd())
+                {
+                    _position += 2;
+                    return new PdfDictionaryObject(values);
+                }
+
+                if (_position >= _data.Length || _data[_position] != (byte)'/')
+                    throw new InvalidDataException(
+                        $"Expected content dictionary name at byte {_position}.");
+
+                var name = ReadName();
+                values[name] = ReadObject(depth);
+            }
         }
 
         private PdfArrayObject ReadArray(int depth)
@@ -557,11 +686,15 @@ public static class PdfContentStreamInterpreter
             _position++;
             var bytes = new List<byte>();
             var high = -1;
+            var closed = false;
             while (_position < _data.Length)
             {
                 var current = _data[_position++];
                 if (current == (byte)'>')
+                {
+                    closed = true;
                     break;
+                }
                 if (IsWhitespace(current))
                     continue;
                 var nibble = HexValue(current);
@@ -575,6 +708,8 @@ public static class PdfContentStreamInterpreter
                     high = -1;
                 }
             }
+            if (!closed)
+                throw new EndOfStreamException("Unterminated content hexadecimal string.");
             if (high >= 0)
                 bytes.Add((byte)(high << 4));
             return bytes.ToArray();
@@ -623,5 +758,15 @@ public static class PdfContentStreamInterpreter
             >= (byte)'a' and <= (byte)'f' => value - 'a' + 10,
             _ => -1,
         };
+
+        private bool IsDictionaryStart() =>
+            _position + 1 < _data.Length
+            && _data[_position] == (byte)'<'
+            && _data[_position + 1] == (byte)'<';
+
+        private bool IsDictionaryEnd() =>
+            _position + 1 < _data.Length
+            && _data[_position] == (byte)'>'
+            && _data[_position + 1] == (byte)'>';
     }
 }
