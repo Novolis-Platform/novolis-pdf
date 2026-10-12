@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using Novolis.Pdf.Abstractions;
 using Novolis.Pdf.Parsing;
 using Novolis.Pdf.Rendering;
@@ -90,6 +91,9 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
                     break;
                 case PdfTextCommand text:
                     DrawText(canvas, paint, document, page, text);
+                    break;
+                case PdfImageCommand image:
+                    DrawImage(canvas, image);
                     break;
             }
         }
@@ -295,8 +299,7 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         if (identity.Length > 0)
             return identity;
 
-        if (decoded.FromToUnicode
-            && !string.IsNullOrEmpty(decoded.Text)
+        if (!string.IsNullOrEmpty(decoded.Text)
             && !decoded.Text.All(static value => value == '\uFFFD'))
         {
             var mapped = font.GetGlyphs(decoded.Text);
@@ -344,6 +347,103 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         using var blob = builder.Build();
         if (blob is not null)
             canvas.DrawText(blob, 0, 0, paint);
+    }
+
+    private static void DrawImage(SKCanvas canvas, PdfImageCommand command)
+    {
+        using var bitmap = CreateBitmap(command);
+        var pageView = PdfSkiaCanvas.FromSkia(canvas.TotalMatrix);
+        canvas.Save();
+        canvas.SetMatrix(PdfSkiaCanvas.ToSkia(pageView.Multiply(command.Matrix)));
+        canvas.DrawBitmap(
+            bitmap,
+            new SKRect(0, 0, 1, 1),
+            new SKSamplingOptions(SKFilterMode.Linear));
+        canvas.Restore();
+    }
+
+    private static SKBitmap CreateBitmap(PdfImageCommand command)
+    {
+        var byteCount = checked(command.Width * command.Height * 4);
+        var rgba = new byte[byteCount];
+        var components = command.PixelFormat switch
+        {
+            PdfImagePixelFormat.Gray => 1,
+            PdfImagePixelFormat.Rgb => 3,
+            PdfImagePixelFormat.Cmyk => 4,
+            _ => throw new InvalidOperationException("Unsupported PDF image pixel format."),
+        };
+
+        for (var sourceY = 0; sourceY < command.Height; sourceY++)
+        {
+            var targetY = command.Height - 1 - sourceY;
+            for (var x = 0; x < command.Width; x++)
+            {
+                var sample = ((sourceY * command.Width) + x) * components;
+                var destination = ((targetY * command.Width) + x) * 4;
+                var (red, green, blue) = command.PixelFormat switch
+                {
+                    PdfImagePixelFormat.Gray =>
+                        (ReadSample(command.Samples, sample, command.BitsPerComponent),
+                         ReadSample(command.Samples, sample, command.BitsPerComponent),
+                         ReadSample(command.Samples, sample, command.BitsPerComponent)),
+                    PdfImagePixelFormat.Rgb =>
+                        (ReadSample(command.Samples, sample, command.BitsPerComponent),
+                         ReadSample(command.Samples, sample + 1, command.BitsPerComponent),
+                         ReadSample(command.Samples, sample + 2, command.BitsPerComponent)),
+                    PdfImagePixelFormat.Cmyk => CmykToRgb(
+                        ReadSample(command.Samples, sample, command.BitsPerComponent),
+                        ReadSample(command.Samples, sample + 1, command.BitsPerComponent),
+                        ReadSample(command.Samples, sample + 2, command.BitsPerComponent),
+                        ReadSample(command.Samples, sample + 3, command.BitsPerComponent)),
+                    _ => throw new InvalidOperationException("Unsupported PDF image pixel format."),
+                };
+                rgba[destination] = red;
+                rgba[destination + 1] = green;
+                rgba[destination + 2] = blue;
+                rgba[destination + 3] = byte.MaxValue;
+            }
+        }
+
+        var bitmap = new SKBitmap(
+            new SKImageInfo(
+                command.Width,
+                command.Height,
+                SKColorType.Rgba8888,
+                SKAlphaType.Premul));
+        Marshal.Copy(rgba, 0, bitmap.GetPixels(), rgba.Length);
+        return bitmap;
+    }
+
+    private static byte ReadSample(byte[] samples, int componentIndex, int bitsPerComponent)
+    {
+        if (bitsPerComponent == 8)
+            return componentIndex < samples.Length ? samples[componentIndex] : (byte)0;
+
+        var bitIndex = checked(componentIndex * bitsPerComponent);
+        var byteIndex = bitIndex / 8;
+        var shift = 8 - bitsPerComponent - (bitIndex % 8);
+        if (byteIndex >= samples.Length || shift < 0)
+            return 0;
+        var mask = (1 << bitsPerComponent) - 1;
+        var value = (samples[byteIndex] >> shift) & mask;
+        return (byte)(value * byte.MaxValue / mask);
+    }
+
+    private static (byte Red, byte Green, byte Blue) CmykToRgb(
+        byte cyan,
+        byte magenta,
+        byte yellow,
+        byte black)
+    {
+        var c = cyan / 255d;
+        var m = magenta / 255d;
+        var y = yellow / 255d;
+        var k = black / 255d;
+        return (
+            (byte)System.Math.Round(255 * (1 - System.Math.Min(1, c + k))),
+            (byte)System.Math.Round(255 * (1 - System.Math.Min(1, m + k))),
+            (byte)System.Math.Round(255 * (1 - System.Math.Min(1, y + k))));
     }
 
     private SKTypeface ResolveTypeface(

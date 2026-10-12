@@ -168,8 +168,20 @@ public static class PdfNames
     /// <summary>Form XObject subtype.</summary>
     public static PdfName Form { get; } = new("Form");
 
+    /// <summary>Image XObject subtype.</summary>
+    public static PdfName Image { get; } = new("Image");
+
     /// <summary>Form or text matrix.</summary>
     public static PdfName Matrix { get; } = new("Matrix");
+
+    /// <summary>Image width.</summary>
+    public static PdfName Width { get; } = new("Width");
+
+    /// <summary>Image height.</summary>
+    public static PdfName Height { get; } = new("Height");
+
+    /// <summary>Image color space.</summary>
+    public static PdfName ColorSpace { get; } = new("ColorSpace");
 
     /// <summary>First encoded character.</summary>
     public static PdfName FirstChar { get; } = new("FirstChar");

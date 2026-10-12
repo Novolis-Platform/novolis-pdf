@@ -407,7 +407,30 @@ public static class PdfContentStreamInterpreter
             return false;
 
         var stream = new PdfResourceDictionary(document, resources).ResolveXObject(name);
-        if (stream is null || stream.Dictionary.GetName(PdfNames.Subtype) != PdfNames.Form)
+        if (stream is null)
+            return false;
+
+        var subtype = stream.Dictionary.GetName(PdfNames.Subtype);
+        if (subtype?.Value == PdfNames.Image.Value)
+        {
+            if (TryCreateImage(
+                    document,
+                    stream,
+                    ctm,
+                    pageIndex,
+                    limits,
+                    out var image,
+                    out var diagnostic))
+            {
+                commands.Add(image!);
+            }
+
+            if (diagnostic is not null)
+                diagnostics.Add(diagnostic);
+            return true;
+        }
+
+        if (subtype?.Value != PdfNames.Form.Value)
             return false;
 
         var formResources = document.ResolveDictionary(stream.Dictionary.Get(PdfNames.Resources))
@@ -426,6 +449,135 @@ public static class PdfContentStreamInterpreter
             formDepth + 1);
         return true;
     }
+
+    private static bool TryCreateImage(
+        PdfParsedDocument document,
+        PdfStreamObject stream,
+        PdfMatrix ctm,
+        int pageIndex,
+        PdfLimits limits,
+        out PdfImageCommand? image,
+        out PdfDiagnosticEntry? diagnostic)
+    {
+        image = null;
+        diagnostic = null;
+        try
+        {
+            if (!stream.Dictionary.TryGetInteger(PdfNames.Width, out var width)
+                || !stream.Dictionary.TryGetInteger(PdfNames.Height, out var height)
+                || width <= 0
+                || height <= 0)
+            {
+                diagnostic = ImageDiagnostic(
+                    pageIndex,
+                    "PDF033",
+                    "Image XObject has no valid dimensions.");
+                return false;
+            }
+
+            var bits = stream.Dictionary.TryGetInteger(PdfNames.BitsPerComponent, out var bitsValue)
+                ? bitsValue
+                : 8;
+            if (bits is not (1 or 2 or 4 or 8))
+            {
+                diagnostic = ImageDiagnostic(
+                    pageIndex,
+                    "PDF034",
+                    $"Image XObject uses unsupported bits-per-component value {bits}.");
+                return false;
+            }
+
+            var format = ResolveImageFormat(document, stream.Dictionary.Get(PdfNames.ColorSpace));
+            if (format is null)
+            {
+                diagnostic = ImageDiagnostic(
+                    pageIndex,
+                    "PDF035",
+                    "Image XObject uses an unsupported color space.");
+                return false;
+            }
+
+            var components = format switch
+            {
+                PdfImagePixelFormat.Gray => 1,
+                PdfImagePixelFormat.Rgb => 3,
+                PdfImagePixelFormat.Cmyk => 4,
+                _ => 0,
+            };
+            var sampleBits = checked((long)width * height * components * bits);
+            var sampleBytes = checked((sampleBits + 7) / 8);
+            var pixelLimit = checked((long)width * height);
+            if (pixelLimit > limits.MaximumImagePixels)
+            {
+                diagnostic = ImageDiagnostic(
+                    pageIndex,
+                    "PDF036",
+                    $"Image XObject exceeds the configured {limits.MaximumImagePixels:N0}-pixel limit.");
+                return false;
+            }
+
+            var samples = PdfStreamDecoder.Decode(stream, limits);
+            if (samples.LongLength < sampleBytes)
+            {
+                diagnostic = ImageDiagnostic(
+                    pageIndex,
+                    "PDF037",
+                    "Image XObject ended before all pixel samples were available.");
+                return false;
+            }
+
+            image = new PdfImageCommand(
+                samples,
+                width,
+                height,
+                bits,
+                format.Value,
+                ctm);
+            return true;
+        }
+        catch (PdfReaderException exception)
+        {
+            diagnostic = exception.Diagnostic with { PageIndex = pageIndex };
+            return false;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or OverflowException)
+        {
+            diagnostic = ImageDiagnostic(pageIndex, "PDF038", exception.Message, exception);
+            return false;
+        }
+    }
+
+    private static PdfImagePixelFormat? ResolveImageFormat(
+        PdfParsedDocument document,
+        PdfObject? value)
+    {
+        var resolved = document.Resolve(value);
+        var name = resolved switch
+        {
+            PdfNameObject directName => directName.Value,
+            PdfArrayObject array when array.Items.FirstOrDefault() is PdfNameObject first => first.Value,
+            _ => null,
+        };
+        return name switch
+        {
+            "DeviceGray" or "G" => PdfImagePixelFormat.Gray,
+            "DeviceRGB" or "RGB" => PdfImagePixelFormat.Rgb,
+            "DeviceCMYK" or "CMYK" => PdfImagePixelFormat.Cmyk,
+            _ => null,
+        };
+    }
+
+    private static PdfDiagnosticEntry ImageDiagnostic(
+        int pageIndex,
+        string code,
+        string message,
+        Exception? exception = null) =>
+        new(
+            PdfDiagnosticSeverity.Warning,
+            code,
+            message,
+            PageIndex: pageIndex,
+            Exception: exception);
 
     private static PdfMatrix ReadMatrix(PdfArrayObject? array)
     {
