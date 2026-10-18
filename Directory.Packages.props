@@ -4,7 +4,7 @@
     <CentralPackageFloatingVersionsEnabled>true</CentralPackageFloatingVersionsEnabled>
   </PropertyGroup>
   <ItemGroup>
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.402" />
     <PackageVersion Include="SkiaSharp" Version="4.153.1" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Android" Version="4.153.1" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.153.1" />
@@ -12,6 +12,7 @@
     <PackageVersion Include="SkiaSharp.NativeAssets.WebAssembly" Version="4.153.1" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.153.1" />
     <PackageVersion Include="Svg.Skia" Version="5.2.3" />
-    <PackageVersion Include="TUnit" Version="1.72.16" />
+    <PackageVersion Include="TUnit" Version="1.75.0" />
   </ItemGroup>
 </Project>
+
