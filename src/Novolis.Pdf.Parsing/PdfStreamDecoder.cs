@@ -16,49 +16,73 @@ public static class PdfStreamDecoder
         limits ??= PdfLimits.Default;
         limits.Validate();
 
-        var filters = ReadFilters(stream.Dictionary.Get(PdfNames.Filter));
-        var data = stream.EncodedBytes;
+        var filters = ReadFilters(
+            stream.Dictionary.Get(PdfNames.Filter),
+            stream.Dictionary.Get(PdfNames.DecodeParms));
+        var data = stream.EncodedBytes.ToArray();
         for (var index = 0; index < filters.Count; index++)
         {
-            var filter = filters[index];
+            var filter = filters[index].Filter;
             data = filter switch
             {
                 PdfStreamFilter.FlateDecode => Inflate(data, limits.MaximumStreamBytes),
                 PdfStreamFilter.AsciiHexDecode => DecodeAsciiHex(data),
                 PdfStreamFilter.Ascii85Decode => DecodeAscii85(data),
-                PdfStreamFilter.RunLengthDecode => DecodeRunLength(data),
+                PdfStreamFilter.RunLengthDecode => DecodeRunLength(data, limits.MaximumStreamBytes),
+                PdfStreamFilter.LzwDecode => DecodeLzw(
+                    data,
+                    filters[index].Parameters,
+                    limits.MaximumStreamBytes),
+                PdfStreamFilter.Crypt => data,
                 _ => throw new PdfReaderException(new PdfDiagnosticEntry(
                     PdfDiagnosticSeverity.Warning,
                     "PDF020",
-                    $"Unsupported PDF stream filter '{filter}'.")),
+                    $"Unsupported PDF stream filter '{filter}'."),
+                    PdfReaderFailureKind.UnsupportedFilter),
             };
 
             if (data.LongLength > limits.MaximumStreamBytes)
-                throw new PdfReaderException(new PdfDiagnosticEntry(
-                    PdfDiagnosticSeverity.Error,
-                    "PDF021",
-                    $"Decoded stream exceeded the configured limit of {limits.MaximumStreamBytes} bytes."));
+                throw DecodedLimit(limits.MaximumStreamBytes);
 
-            data = ApplyPredictor(
-                data,
-                index < filters.Count - 1
-                    ? null
-                    : ReadDecodeParameters(stream.Dictionary.Get(PdfNames.DecodeParms)),
-                limits.MaximumStreamBytes);
+            data = ApplyPredictor(data, filters[index].Parameters, limits.MaximumStreamBytes);
         }
 
         return data;
     }
 
-    private static IReadOnlyList<PdfStreamFilter> ReadFilters(PdfObject? value) =>
-        value switch
+    private static IReadOnlyList<PdfFilterSpec> ReadFilters(
+        PdfObject? value,
+        PdfObject? decodeParameters)
+    {
+        var names = value switch
         {
-            PdfNameObject name => [ParseFilter(name.AsName())],
+            PdfNameObject name => [name.AsName()],
             PdfArrayObject array => array.Items
                 .OfType<PdfNameObject>()
-                .Select(static item => ParseFilter(item.AsName()))
+                .Select(static item => item.AsName())
                 .ToArray(),
             _ => [],
+        };
+        var filters = new PdfFilterSpec[names.Length];
+        for (var index = 0; index < names.Length; index++)
+        {
+            filters[index] = new(
+                ParseFilter(names[index]),
+                ReadDecodeParameters(decodeParameters, index));
+        }
+
+        return filters;
+    }
+
+    private static PdfDictionaryObject? ReadDecodeParameters(
+        PdfObject? value,
+        int index) =>
+        value switch
+        {
+            PdfDictionaryObject dictionary when index == 0 => dictionary,
+            PdfArrayObject array when index < array.Items.Count
+                => array.Items[index] as PdfDictionaryObject,
+            _ => null,
         };
 
     private static PdfStreamFilter ParseFilter(PdfName name)
@@ -97,10 +121,7 @@ public static class PdfStreamDecoder
             if (read == 0)
                 return;
             if (output.Length + read > maximumBytes)
-                throw new PdfReaderException(new PdfDiagnosticEntry(
-                    PdfDiagnosticSeverity.Error,
-                    "PDF021",
-                    $"Decoded stream exceeded the configured limit of {maximumBytes} bytes."));
+                throw DecodedLimit(maximumBytes);
             output.Write(buffer, 0, read);
         }
     }
@@ -183,7 +204,7 @@ public static class PdfStreamDecoder
         output.AddRange(bytes.AsSpan(0, byteCount).ToArray());
     }
 
-    private static byte[] DecodeRunLength(byte[] data)
+    private static byte[] DecodeRunLength(byte[] data, long maximumBytes)
     {
         var output = new List<byte>();
         var index = 0;
@@ -197,6 +218,8 @@ public static class PdfStreamDecoder
                 var count = length + 1;
                 if (index + count > data.Length)
                     throw new EndOfStreamException("Truncated RunLength stream.");
+                if ((long)output.Count + count > maximumBytes)
+                    throw DecodedLimit(maximumBytes);
                 output.AddRange(data.AsSpan(index, count).ToArray());
                 index += count;
                 continue;
@@ -206,8 +229,77 @@ public static class PdfStreamDecoder
             if (index >= data.Length)
                 throw new EndOfStreamException("Truncated RunLength repeat.");
             var repeated = data[index++];
+            if ((long)output.Count + repeatCount > maximumBytes)
+                throw DecodedLimit(maximumBytes);
             for (var repeat = 0; repeat < repeatCount; repeat++)
                 output.Add(repeated);
+        }
+
+        return output.ToArray();
+    }
+
+    private static byte[] DecodeLzw(
+        byte[] data,
+        PdfDictionaryObject? parameters,
+        long maximumBytes)
+    {
+        var earlyChange = parameters?.TryGetInteger(PdfNames.EarlyChange, out var earlyValue) == true
+            ? earlyValue
+            : 1;
+        if (earlyChange is not (0 or 1))
+            throw new InvalidDataException("LZW EarlyChange must be 0 or 1.");
+
+        const int clearCode = 256;
+        const int endCode = 257;
+        var dictionary = new byte[4096][];
+        var codeSize = 9;
+        var nextCode = 258;
+        byte[]? previous = null;
+        var output = new List<byte>();
+        var reader = new LzwBitReader(data);
+        while (reader.TryRead(codeSize, out var code))
+        {
+            if (code == clearCode)
+            {
+                codeSize = 9;
+                nextCode = 258;
+                previous = null;
+                continue;
+            }
+
+            if (code == endCode)
+                break;
+
+            byte[] entry;
+            if (code < 256)
+            {
+                entry = [(byte)code];
+            }
+            else if (code >= 258 && code < nextCode && dictionary[code] is { } known)
+            {
+                entry = known;
+            }
+            else if (code == nextCode && previous is { Length: > 0 })
+            {
+                entry = previous.Concat([previous[0]]).ToArray();
+            }
+            else
+            {
+                throw new InvalidDataException("LZW stream referenced an invalid code.");
+            }
+
+            if ((long)output.Count + entry.Length > maximumBytes)
+                throw DecodedLimit(maximumBytes);
+            output.AddRange(entry);
+
+            if (previous is { Length: > 0 } && nextCode < dictionary.Length)
+            {
+                dictionary[nextCode++] = previous.Concat([entry[0]]).ToArray();
+                if (codeSize < 12 && nextCode + earlyChange >= (1 << codeSize))
+                    codeSize++;
+            }
+
+            previous = entry;
         }
 
         return output.ToArray();
@@ -220,14 +312,6 @@ public static class PdfStreamDecoder
         >= (byte)'a' and <= (byte)'f' => value - 'a' + 10,
         _ => -1,
     };
-
-    private static PdfDictionaryObject? ReadDecodeParameters(PdfObject? value) =>
-        value switch
-        {
-            PdfDictionaryObject dictionary => dictionary,
-            PdfArrayObject array => array.Items.OfType<PdfDictionaryObject>().FirstOrDefault(),
-            _ => null,
-        };
 
     private static byte[] ApplyPredictor(
         byte[] data,
@@ -296,10 +380,7 @@ public static class PdfStreamDecoder
         }
 
         if (output.LongLength > maximumBytes)
-            throw new PdfReaderException(new PdfDiagnosticEntry(
-                PdfDiagnosticSeverity.Error,
-                "PDF021",
-                $"Decoded stream exceeded the configured limit of {maximumBytes} bytes."));
+            throw DecodedLimit(maximumBytes);
         return output;
     }
 
@@ -319,10 +400,7 @@ public static class PdfStreamDecoder
                     (byte)(output[rowStart + index] + output[rowStart + index - bytesPerPixel]));
         }
         if (output.LongLength > maximumBytes)
-            throw new PdfReaderException(new PdfDiagnosticEntry(
-                PdfDiagnosticSeverity.Error,
-                "PDF021",
-                $"Decoded stream exceeded the configured limit of {maximumBytes} bytes."));
+            throw DecodedLimit(maximumBytes);
         return output;
     }
 
@@ -335,5 +413,45 @@ public static class PdfStreamDecoder
         return leftDistance <= upDistance && leftDistance <= upLeftDistance
             ? left
             : upDistance <= upLeftDistance ? up : upLeft;
+    }
+
+    private static PdfReaderException DecodedLimit(long maximumBytes) =>
+        new(
+            new PdfDiagnosticEntry(
+                PdfDiagnosticSeverity.Error,
+                "PDF021",
+                $"Decoded stream exceeded the configured limit of {maximumBytes} bytes."),
+            PdfReaderFailureKind.ResourceLimit);
+
+    private readonly record struct PdfFilterSpec(
+        PdfStreamFilter Filter,
+        PdfDictionaryObject? Parameters);
+
+    private sealed class LzwBitReader
+    {
+        private readonly byte[] _data;
+        private int _bitPosition;
+
+        public LzwBitReader(byte[] data) => _data = data;
+
+        public bool TryRead(int bitCount, out int value)
+        {
+            if (_bitPosition + bitCount > _data.Length * 8)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = 0;
+            for (var index = 0; index < bitCount; index++)
+            {
+                var byteIndex = _bitPosition / 8;
+                var bitIndex = 7 - (_bitPosition % 8);
+                value = (value << 1) | ((_data[byteIndex] >> bitIndex) & 1);
+                _bitPosition++;
+            }
+
+            return true;
+        }
     }
 }

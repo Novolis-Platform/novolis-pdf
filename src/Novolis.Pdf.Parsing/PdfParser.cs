@@ -16,22 +16,41 @@ public static partial class PdfParser
         PdfLimits? limits = null,
         CancellationToken cancellationToken = default)
     {
+        return await ParseAsync(
+                source,
+                new PdfOpenOptions
+                {
+                    Limits = limits ?? PdfLimits.Default,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Parses a PDF source using bounded reader and password options.</summary>
+    public static async ValueTask<PdfParsedDocument> ParseAsync(
+        IPdfSource source,
+        PdfOpenOptions options,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(source);
-        limits ??= PdfLimits.Default;
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        var limits = options.Limits;
         limits.Validate();
 
         var data = await ReadAllAsync(source, limits, cancellationToken).ConfigureAwait(false);
-        if (data.Length < 5 || !Encoding.ASCII.GetBytes("%PDF-").AsSpan().SequenceEqual(data.AsSpan(0, 5)))
+        if (FindPdfHeader(data) < 0)
         {
             throw new PdfReaderException(new PdfDiagnosticEntry(
                 PdfDiagnosticSeverity.Error,
                 "PDF001",
-                "The source does not begin with a PDF header."));
+                "The source does not contain a PDF header in the permitted prefix."));
         }
 
         var diagnostics = new List<PdfDiagnosticEntry>();
         var objects = new Dictionary<int, PdfIndirectObject>();
         var objectOffsets = ReadObjectOffsetsFromXref(data, limits, diagnostics, out var xrefTrailer);
+        var trailer = xrefTrailer ?? ReadTrailer(data, limits, diagnostics);
         if (objectOffsets.Count == 0)
         {
             foreach (Match match in ObjectHeaderRegex.Matches(Encoding.ASCII.GetString(data)))
@@ -46,6 +65,16 @@ public static partial class PdfParser
                 }
             }
         }
+
+        var security = await CreateSecurityHandlerAsync(
+                data,
+                objectOffsets,
+                trailer,
+                source.Descriptor.DisplayName,
+                options,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         foreach (var (number, entry) in objectOffsets
                      .Where(static item => item.Value.Kind == XrefEntryKind.Offset)
@@ -64,7 +93,14 @@ public static partial class PdfParser
 
             try
             {
-                var parsed = ParseIndirectObject(data, number, entry.Generation, entry.Offset, limits);
+                var parsed = ParseIndirectObject(
+                    data,
+                    number,
+                    entry.Generation,
+                    entry.Offset,
+                    limits,
+                    objectOffsets,
+                    security);
                 if (parsed is not null)
                     objects[number] = parsed;
             }
@@ -82,11 +118,75 @@ public static partial class PdfParser
             }
         }
 
-        ParseObjectStreams(data, objectOffsets, objects, limits, diagnostics, cancellationToken);
+        ParseObjectStreams(
+            data,
+            objectOffsets,
+            objects,
+            limits,
+            diagnostics,
+            security,
+            cancellationToken);
 
-        var trailer = ReadTrailer(data, limits, diagnostics) ?? xrefTrailer;
-        var info = ReadDocumentInfo(source.Descriptor, objects, trailer);
+        var info = ReadDocumentInfo(
+            source.Descriptor,
+            objects,
+            trailer,
+            security?.Capabilities ?? PdfDocumentCapabilities.None);
         return new PdfParsedDocument(info, objects, trailer, diagnostics);
+    }
+
+    private static async ValueTask<PdfSecurityHandler?> CreateSecurityHandlerAsync(
+        byte[] data,
+        IReadOnlyDictionary<int, XrefEntry> objectOffsets,
+        PdfDictionaryObject? trailer,
+        string displayName,
+        PdfOpenOptions options,
+        PdfLimits limits,
+        CancellationToken cancellationToken)
+    {
+        var encryptValue = trailer?.Get(PdfNames.Encrypt);
+        var encryptionObjectNumber = -1;
+        PdfDictionaryObject? encryptionDictionary = trailer?.GetDictionary(PdfNames.Encrypt);
+        if (encryptValue is PdfIndirectReference reference)
+        {
+            encryptionObjectNumber = reference.ObjectNumber;
+            if (!objectOffsets.TryGetValue(reference.ObjectNumber, out var entry)
+                || entry.Kind != XrefEntryKind.Offset)
+            {
+                throw new PdfReaderException(
+                    new PdfDiagnosticEntry(
+                        PdfDiagnosticSeverity.Error,
+                        "PDFSECURITY",
+                        "The PDF encryption dictionary could not be located."),
+                    PdfReaderFailureKind.UnsupportedEncryption);
+            }
+
+            var encryptionObject = ParseIndirectObjectAtOffset(
+                data,
+                entry.Offset,
+                limits,
+                objectOffsets);
+            encryptionDictionary = encryptionObject.Value as PdfDictionaryObject
+                ?? throw new PdfReaderException(
+                    new PdfDiagnosticEntry(
+                        PdfDiagnosticSeverity.Error,
+                        "PDFSECURITY",
+                        "The PDF encryption object is not a dictionary."),
+                    PdfReaderFailureKind.UnsupportedEncryption);
+        }
+
+        if (encryptionDictionary is null)
+            return null;
+
+        var documentId = ReadDocumentId(trailer);
+        return await PdfSecurityHandler.CreateAsync(
+                encryptionDictionary,
+                documentId,
+                options,
+                displayName,
+                encryptionObjectNumber,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static async Task<byte[]> ReadAllAsync(
@@ -100,7 +200,8 @@ public static partial class PdfParser
             throw new PdfReaderException(new PdfDiagnosticEntry(
                 PdfDiagnosticSeverity.Error,
                 "PDF004",
-                $"The document exceeds the configured size limit of {limits.MaximumDocumentBytes} bytes."));
+                $"The document exceeds the configured size limit of {limits.MaximumDocumentBytes} bytes."),
+                PdfReaderFailureKind.ResourceLimit);
         }
 
         if (length is >= 0)
@@ -139,7 +240,8 @@ public static partial class PdfParser
             throw new PdfReaderException(new PdfDiagnosticEntry(
                 PdfDiagnosticSeverity.Error,
                 "PDF005",
-                $"The document exceeded the configured size limit of {limits.MaximumDocumentBytes} bytes."));
+                $"The document exceeded the configured size limit of {limits.MaximumDocumentBytes} bytes."),
+                PdfReaderFailureKind.ResourceLimit);
         }
 
         return output.ToArray();
@@ -150,18 +252,32 @@ public static partial class PdfParser
         int expectedNumber,
         int expectedGeneration,
         long offset,
-        PdfLimits limits)
+        PdfLimits limits,
+        IReadOnlyDictionary<int, XrefEntry>? objectOffsets,
+        PdfSecurityHandler? security)
     {
-        var parsed = ParseIndirectObjectAtOffset(data, offset, limits);
+        var parsed = ParseIndirectObjectAtOffset(data, offset, limits, objectOffsets);
         if (parsed.ObjectNumber != expectedNumber || parsed.Generation != expectedGeneration)
             throw new InvalidDataException("Cross-reference entry points to a different object.");
-        return parsed;
+        return security is null
+            ? parsed
+            : parsed with
+            {
+                Value = parsed.Value is PdfStreamObject stream
+                    && stream.Dictionary.GetName(PdfNames.Type) == PdfNames.XRef
+                    ? parsed.Value
+                    : security.DecryptObject(
+                        parsed.Value,
+                        parsed.ObjectNumber,
+                        parsed.Generation),
+            };
     }
 
     private static PdfIndirectObject ParseIndirectObjectAtOffset(
         byte[] data,
         long offset,
-        PdfLimits limits)
+        PdfLimits limits,
+        IReadOnlyDictionary<int, XrefEntry>? objectOffsets = null)
     {
         if (offset < 0 || offset >= data.Length)
             throw new InvalidDataException("Object offset is outside the source.");
@@ -179,16 +295,21 @@ public static partial class PdfParser
         {
             SkipStreamLineEnding(data, reader);
             var streamStart = reader.Position;
-            var streamLength = ResolveLength(dictionary.Get(PdfNames.Length));
+            var streamLength = ResolveLength(
+                dictionary.Get(PdfNames.Length),
+                data,
+                limits,
+                objectOffsets,
+                new HashSet<int>());
             int length;
             if (streamLength is >= 0 and <= int.MaxValue
-                && streamStart + streamLength.Value <= data.Length)
+                && streamLength.Value <= data.Length - streamStart)
             {
                 length = streamLength.Value;
             }
             else
             {
-                var endStream = reader.FindNext("endstream", streamStart);
+                var endStream = FindStreamEnd(data, streamStart);
                 if (endStream < 0)
                     throw new EndOfStreamException("PDF stream has no endstream marker.");
                 length = endStream - streamStart;
@@ -213,13 +334,50 @@ public static partial class PdfParser
             : throw new InvalidDataException("Expected an integer PDF object header.");
     }
 
-    private static int? ResolveLength(PdfObject? value) =>
-        value is PdfNumberObject number
-        && number.Value >= 0
-        && number.Value <= int.MaxValue
-        && number.Value == Math.Truncate(number.Value)
-            ? (int)number.Value
-            : null;
+    private static int? ResolveLength(
+        PdfObject? value,
+        byte[] data,
+        PdfLimits limits,
+        IReadOnlyDictionary<int, XrefEntry>? objectOffsets,
+        ISet<int> visited)
+    {
+        if (value is PdfNumberObject number
+            && number.Value >= 0
+            && number.Value <= int.MaxValue
+            && number.Value == Math.Truncate(number.Value))
+        {
+            return (int)number.Value;
+        }
+
+        if (value is not PdfIndirectReference reference
+            || objectOffsets is null
+            || !visited.Add(reference.ObjectNumber)
+            || !objectOffsets.TryGetValue(reference.ObjectNumber, out var entry)
+            || entry.Kind != XrefEntryKind.Offset)
+        {
+            return null;
+        }
+
+        var indirect = ParseIndirectObjectAtOffset(data, entry.Offset, limits, objectOffsets);
+        return ResolveLength(indirect.Value, data, limits, objectOffsets, visited);
+    }
+
+    private static int FindStreamEnd(byte[] data, int start)
+    {
+        var value = Encoding.ASCII.GetBytes("endstream");
+        for (var offset = Math.Max(0, start); offset <= data.Length - value.Length; offset++)
+        {
+            if (!data.AsSpan(offset, value.Length).SequenceEqual(value))
+                continue;
+            var beforeIsWhitespace = offset == start || IsWhitespace(data[offset - 1]);
+            var after = offset + value.Length;
+            var afterIsBoundary = after >= data.Length || IsWhitespace(data[after]);
+            if (beforeIsWhitespace && afterIsBoundary)
+                return offset;
+        }
+
+        return -1;
+    }
 
     private static void SkipStreamLineEnding(byte[] data, PdfSyntaxReader reader)
     {
@@ -323,12 +481,25 @@ public static partial class PdfParser
                 {
                     return false;
                 }
+                if (first > limits.MaximumObjects
+                    || count > limits.MaximumObjects
+                    || (long)first + count > limits.MaximumObjects)
+                {
+                    diagnostics.Add(new PdfDiagnosticEntry(
+                        PdfDiagnosticSeverity.Warning,
+                        "PDF011",
+                        "A classic cross-reference range exceeded the configured object limit.",
+                        ObjectNumber: first));
+                    return false;
+                }
 
                 for (var index = 0; index < count; index++)
                 {
                     reader.SkipWhitespaceAndComments();
                     var line = ReadLine(data, reader);
-                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var parts = line.Split(
+                        (char[]?)null,
+                        StringSplitOptions.RemoveEmptyEntries);
                     if (parts.Length < 3
                         || !long.TryParse(
                             parts[0],
@@ -365,6 +536,15 @@ public static partial class PdfParser
                 trailer = MergeTrailer(trailer, previousTrailer);
             }
 
+            if (trailer?.GetNumber(PdfNames.XRefStm) is { } hybrid
+                && hybrid >= 0
+                && hybrid <= long.MaxValue
+                && ReadXrefAt(data, (long)hybrid, limits, offsets, diagnostics, visited, out var hybridTrailer)
+                && hybridTrailer is not null)
+            {
+                trailer = MergeTrailer(trailer, hybridTrailer);
+            }
+
             return true;
         }
 
@@ -383,7 +563,7 @@ public static partial class PdfParser
                 xrefOffset,
                 xrefObject.Generation);
             var decoded = PdfStreamDecoder.Decode(stream, limits);
-            ReadXrefStreamEntries(stream.Dictionary, decoded, offsets);
+            ReadXrefStreamEntries(stream.Dictionary, decoded, offsets, limits);
 
             if (stream.Dictionary.GetNumber(PdfNames.Prev) is { } previous
                 && previous >= 0
@@ -399,6 +579,7 @@ public static partial class PdfParser
         catch (Exception exception) when (
             exception is InvalidDataException
                 or EndOfStreamException
+                or OverflowException
                 or PdfReaderException)
         {
             diagnostics.Add(new PdfDiagnosticEntry(
@@ -414,7 +595,8 @@ public static partial class PdfParser
     private static void ReadXrefStreamEntries(
         PdfDictionaryObject dictionary,
         byte[] data,
-        IDictionary<int, XrefEntry> offsets)
+        IDictionary<int, XrefEntry> offsets,
+        PdfLimits limits)
     {
         var widths = dictionary.GetArray(PdfNames.W);
         if (widths is null || widths.Items.Count < 3)
@@ -428,10 +610,20 @@ public static partial class PdfParser
         if (fieldWidths.Length != 3 || fieldWidths.Any(static width => width < 0 || width > 8))
             throw new InvalidDataException("An xref stream has invalid field widths.");
 
-        var ranges = ReadXrefRanges(dictionary);
+        var ranges = ReadXrefRanges(dictionary, limits);
         var recordWidth = fieldWidths.Sum();
         if (recordWidth <= 0)
             throw new InvalidDataException("An xref stream has an empty record width.");
+
+        var recordCount = ranges.Aggregate(
+            0L,
+            static (total, range) => checked(total + range.Count));
+        if (recordCount > limits.MaximumObjects
+            || recordCount > int.MaxValue / Math.Max(1, recordWidth)
+            || recordCount * recordWidth > data.Length)
+        {
+            throw new InvalidDataException("An xref stream exceeds the configured bounds.");
+        }
 
         var position = 0;
         foreach (var (first, count) in ranges)
@@ -469,13 +661,22 @@ public static partial class PdfParser
     }
 
     private static IReadOnlyList<(int First, int Count)> ReadXrefRanges(
-        PdfDictionaryObject dictionary)
+        PdfDictionaryObject dictionary,
+        PdfLimits limits)
     {
         var index = dictionary.GetArray(PdfNames.Index);
         if (index is null)
         {
             var size = dictionary.GetNumber(PdfNames.Size)
                 ?? throw new InvalidDataException("An xref stream must define /Size.");
+            if (!double.IsFinite(size)
+                || size < 0
+                || size > limits.MaximumObjects
+                || size != Math.Truncate(size))
+            {
+                throw new InvalidDataException("An xref stream /Size exceeds the configured object limit.");
+            }
+
             return [(0, checked((int)size))];
         }
 
@@ -487,7 +688,20 @@ public static partial class PdfParser
             throw new InvalidDataException("An xref stream /Index must contain pairs.");
         var ranges = new List<(int First, int Count)>(values.Length / 2);
         for (var position = 0; position < values.Length; position += 2)
-            ranges.Add((values[position], values[position + 1]));
+        {
+            var first = values[position];
+            var count = values[position + 1];
+            if (first < 0
+                || count < 0
+                || first > limits.MaximumObjects
+                || count > limits.MaximumObjects
+                || (long)first + count > limits.MaximumObjects)
+            {
+                throw new InvalidDataException("An xref stream range exceeds the configured object limit.");
+            }
+
+            ranges.Add((first, count));
+        }
         return ranges;
     }
 
@@ -521,6 +735,7 @@ public static partial class PdfParser
         IDictionary<int, PdfIndirectObject> objects,
         PdfLimits limits,
         ICollection<PdfDiagnosticEntry> diagnostics,
+        PdfSecurityHandler? security,
         CancellationToken cancellationToken)
     {
         foreach (var group in offsets
@@ -557,6 +772,13 @@ public static partial class PdfParser
                 {
                     var objectNumber = ReadInteger(header);
                     var offset = ReadInteger(header);
+                    if (objectNumber < 0
+                        || offset < 0
+                        || firstOffset > decoded.Length
+                        || offset > decoded.Length - firstOffset)
+                    {
+                        throw new InvalidDataException("Object stream entry is outside the decoded stream.");
+                    }
                     entries[index] = (objectNumber, offset);
                 }
 
@@ -571,7 +793,10 @@ public static partial class PdfParser
                     if (objectNumber != reference.Key || objects.ContainsKey(objectNumber))
                         continue;
                     var valueReader = new PdfSyntaxReader(decoded, limits.MaximumNestingDepth);
-                    valueReader.SetPosition(checked(firstOffset + offset));
+                    var valuePosition = checked(firstOffset + offset);
+                    if (valuePosition < 0 || valuePosition >= decoded.Length)
+                        continue;
+                    valueReader.SetPosition(valuePosition);
                     var value = valueReader.ReadObject();
                     objects[objectNumber] = new PdfIndirectObject(
                         objectNumber,
@@ -650,7 +875,8 @@ public static partial class PdfParser
     private static PdfDocumentInfo ReadDocumentInfo(
         PdfSourceDescriptor descriptor,
         IReadOnlyDictionary<int, PdfIndirectObject> objects,
-        PdfDictionaryObject? trailer)
+        PdfDictionaryObject? trailer,
+        PdfDocumentCapabilities capabilities)
     {
         var values = trailer?.Get(PdfNames.Info) switch
         {
@@ -669,7 +895,29 @@ public static partial class PdfParser
             info?.Creator,
             info?.Producer,
             info?.Language,
-            null);
+            null,
+            capabilities);
+    }
+
+    private static byte[] ReadDocumentId(PdfDictionaryObject? trailer) =>
+        trailer?.GetArray(PdfNames.ID)?.Items
+            .OfType<PdfStringObject>()
+            .FirstOrDefault()?
+            .Bytes
+            .ToArray()
+        ?? [];
+
+    private static int FindPdfHeader(byte[] data)
+    {
+        var header = Encoding.ASCII.GetBytes("%PDF-");
+        var maximumOffset = Math.Min(data.Length - header.Length, 1024);
+        for (var offset = 0; offset <= maximumOffset; offset++)
+        {
+            if (data.AsSpan(offset, header.Length).SequenceEqual(header))
+                return offset;
+        }
+
+        return -1;
     }
 
     private enum XrefEntryKind

@@ -108,11 +108,65 @@ public static class PdfNames
     /// <summary>Stream decode parameters.</summary>
     public static PdfName DecodeParms { get; } = new("DecodeParms");
 
+    /// <summary>Document encryption dictionary.</summary>
+    public static PdfName Encrypt { get; } = new("Encrypt");
+
+    /// <summary>Encryption handler name.</summary>
+    public static PdfName Standard { get; } = new("Standard");
+
+    /// <summary>Encryption algorithm version.</summary>
+    public static PdfName V { get; } = new("V");
+
+    /// <summary>Encryption revision.</summary>
+    public static PdfName R { get; } = new("R");
+
+    /// <summary>Owner encryption entry.</summary>
+    public static PdfName O { get; } = new("O");
+
+    /// <summary>User encryption entry.</summary>
+    public static PdfName U { get; } = new("U");
+
+    /// <summary>Owner-encrypted file key.</summary>
+    public static PdfName OE { get; } = new("OE");
+
+    /// <summary>User-encrypted file key.</summary>
+    public static PdfName UE { get; } = new("UE");
+
+    /// <summary>Encrypted permissions block.</summary>
+    public static PdfName Perms { get; } = new("Perms");
+
+    /// <summary>Permissions encryption entry.</summary>
+    public static PdfName P { get; } = new("P");
+
+    /// <summary>Encryption key length in bits.</summary>
+    public static PdfName KeyLength { get; } = new("Length");
+
+    /// <summary>Encryption metadata flag.</summary>
+    public static PdfName EncryptMetadata { get; } = new("EncryptMetadata");
+
+    /// <summary>Crypt filter dictionary.</summary>
+    public static PdfName CF { get; } = new("CF");
+
+    /// <summary>Stream crypt filter.</summary>
+    public static PdfName StmF { get; } = new("StmF");
+
+    /// <summary>String crypt filter.</summary>
+    public static PdfName StrF { get; } = new("StrF");
+
+    /// <summary>Crypt filter method.</summary>
+    public static PdfName CFM { get; } = new("CFM");
+
+    /// <summary>Trailer file identifier array.</summary>
+    public static PdfName ID { get; } = new("ID");
+
     /// <summary>Stream length.</summary>
     public static PdfName Length { get; } = new("Length");
 
     /// <summary>Previous xref offset.</summary>
     public static PdfName Prev { get; } = new("Prev");
+
+    /// <summary>Hybrid-reference xref stream offset.</summary>
+    public static PdfName XRefStm { get; } = new("XRefStm");
 
     /// <summary>Trailer or xref size.</summary>
     public static PdfName Size { get; } = new("Size");
@@ -143,6 +197,15 @@ public static class PdfNames
 
     /// <summary>Font encoding.</summary>
     public static PdfName Encoding { get; } = new("Encoding");
+
+    /// <summary>Base simple-font encoding.</summary>
+    public static PdfName BaseEncoding { get; } = new("BaseEncoding");
+
+    /// <summary>Simple-font encoding differences.</summary>
+    public static PdfName Differences { get; } = new("Differences");
+
+    /// <summary>CID to glyph mapping.</summary>
+    public static PdfName CidToGidMap { get; } = new("CIDToGIDMap");
 
     /// <summary>Type 0 font subtype.</summary>
     public static PdfName Type0 { get; } = new("Type0");
@@ -182,6 +245,12 @@ public static class PdfNames
 
     /// <summary>Image color space.</summary>
     public static PdfName ColorSpace { get; } = new("ColorSpace");
+
+    /// <summary>Image mask flag.</summary>
+    public static PdfName ImageMask { get; } = new("ImageMask");
+
+    /// <summary>Image sample decode array.</summary>
+    public static PdfName Decode { get; } = new("Decode");
 
     /// <summary>First encoded character.</summary>
     public static PdfName FirstChar { get; } = new("FirstChar");
@@ -228,8 +297,32 @@ public static class PdfNames
     /// <summary>Run-length filter abbreviation.</summary>
     public static PdfName RL { get; } = new("RL");
 
+    /// <summary>LZW filter.</summary>
+    public static PdfName LzwDecode { get; } = new("LZWDecode");
+
+    /// <summary>LZW filter abbreviation.</summary>
+    public static PdfName Lzw { get; } = new("LZW");
+
+    /// <summary>Crypt filter.</summary>
+    public static PdfName Crypt { get; } = new("Crypt");
+
+    /// <summary>JPEG filter.</summary>
+    public static PdfName DctDecode { get; } = new("DCTDecode");
+
+    /// <summary>CCITT fax filter.</summary>
+    public static PdfName CcittFaxDecode { get; } = new("CCITTFaxDecode");
+
+    /// <summary>JPEG 2000 filter.</summary>
+    public static PdfName JpxDecode { get; } = new("JPXDecode");
+
+    /// <summary>JBIG2 filter.</summary>
+    public static PdfName Jbig2Decode { get; } = new("JBIG2Decode");
+
     /// <summary>Predictor algorithm.</summary>
     public static PdfName Predictor { get; } = new("Predictor");
+
+    /// <summary>LZW code-size transition mode.</summary>
+    public static PdfName EarlyChange { get; } = new("EarlyChange");
 
     /// <summary>Predictor columns.</summary>
     public static PdfName Columns { get; } = new("Columns");

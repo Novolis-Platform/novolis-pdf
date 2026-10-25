@@ -33,7 +33,14 @@ public sealed class PdfDocumentSession : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(source);
-        var parsed = await PdfParser.ParseAsync(source, limits, cancellationToken).ConfigureAwait(false);
+        var parsed = await PdfParser.ParseAsync(
+                source,
+                new PdfOpenOptions
+                {
+                    Limits = limits ?? PdfLimits.Default,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
         return new PdfDocumentSession(source, parsed);
     }
 
@@ -45,7 +52,17 @@ public sealed class PdfDocumentSession : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
-        return OpenAsync(source, options.Limits, cancellationToken);
+        return OpenWithOptionsAsync(source, options, cancellationToken);
+    }
+
+    private static async ValueTask<PdfDocumentSession> OpenWithOptionsAsync(
+        IPdfSource source,
+        PdfOpenOptions options,
+        CancellationToken cancellationToken)
+    {
+        var parsed = await PdfParser.ParseAsync(source, options, cancellationToken)
+            .ConfigureAwait(false);
+        return new PdfDocumentSession(source, parsed);
     }
 
     /// <inheritdoc />

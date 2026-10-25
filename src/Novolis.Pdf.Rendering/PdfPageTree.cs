@@ -118,7 +118,9 @@ public static class PdfPageTree
                 node.CropBox ?? CropBox,
                 node.Contents ?? Contents,
                 node.Resources ?? Resources,
-                Rotation + node.Rotation,
+                node.Dictionary.TryGetInteger(PdfNames.Rotate, out var rotation)
+                    ? rotation
+                    : Rotation,
                 node.Dictionary.GetNumber(PdfNames.UserUnit) ?? UserUnit);
     }
 }

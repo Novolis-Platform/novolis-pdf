@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "name": "indirect-length.pdf",
+      "kind": "stream-length",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "rotated-crop.pdf",
+      "kind": "page-geometry",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "multi-content-stream.pdf",
+      "kind": "content-arrays",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "protected-r3.pdf",
+      "kind": "password",
+      "pages": 1,
+      "passwordProtected": true
+    },
+    {
+      "name": "protected-empty.pdf",
+      "kind": "empty-password",
+      "pages": 1,
+      "passwordProtected": true
+    },
+    {
+      "name": "protected-aes256.pdf",
+      "kind": "aes256-password",
+      "pages": 1,
+      "passwordProtected": true
+    },
+    {
+      "name": "protected-object-stream.pdf",
+      "kind": "encrypted-object-stream",
+      "pages": 1,
+      "passwordProtected": true
+    },
+    {
+      "name": "jpeg-image.pdf",
+      "kind": "jpeg-image",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "inline-image.pdf",
+      "kind": "inline-image",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "monochrome-scan.pdf",
+      "kind": "monochrome-scan",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "xref-stream.pdf",
+      "kind": "xref-stream",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "object-stream.pdf",
+      "kind": "object-stream",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "hybrid-xref.pdf",
+      "kind": "hybrid-xref",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "incremental-update.pdf",
+      "kind": "incremental-update",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "font-cmap.pdf",
+      "kind": "font-cmap",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "leading-preamble.pdf",
+      "kind": "header-recovery",
+      "pages": 1,
+      "passwordProtected": false
+    },
+    {
+      "name": "malformed-truncated-xref.pdf",
+      "kind": "recovery",
+      "pages": 1,
+      "passwordProtected": false
+    }
+  ]
+}

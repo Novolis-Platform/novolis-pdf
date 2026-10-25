@@ -17,4 +17,22 @@ public enum PdfStreamFilter
 
     /// <summary>Run-length.</summary>
     RunLengthDecode,
+
+    /// <summary>LZW.</summary>
+    LzwDecode,
+
+    /// <summary>PDF crypt filter already handled by the security layer.</summary>
+    Crypt,
+
+    /// <summary>JPEG image data.</summary>
+    DctDecode,
+
+    /// <summary>CCITT fax image data.</summary>
+    CcittFaxDecode,
+
+    /// <summary>JPEG 2000 image data.</summary>
+    JpxDecode,
+
+    /// <summary>JBIG2 image data.</summary>
+    Jbig2Decode,
 }

@@ -21,4 +21,13 @@ public enum PdfDocumentCapabilities
 
     /// <summary>The document was recovered from malformed or incomplete structures.</summary>
     Recovered = 1 << 4,
+
+    /// <summary>The document is encrypted.</summary>
+    Encrypted = 1 << 5,
+
+    /// <summary>The document was successfully unlocked with a password.</summary>
+    PasswordUnlocked = 1 << 6,
+
+    /// <summary>The document has permissions restrictions from its security handler.</summary>
+    PermissionsRestricted = 1 << 7,
 }

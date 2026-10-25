@@ -9,4 +9,7 @@ public sealed record PdfImageCommand(
     int Height,
     int BitsPerComponent,
     PdfImagePixelFormat PixelFormat,
-    PdfMatrix Matrix) : PdfDrawCommand;
+    PdfMatrix Matrix,
+    byte[]? EncodedImage = null,
+    bool InvertSamples = false,
+    byte[]? Palette = null) : PdfDrawCommand;

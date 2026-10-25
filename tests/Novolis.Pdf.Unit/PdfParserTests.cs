@@ -145,6 +145,21 @@ public sealed class PdfParserTests
     }
 
     [Test]
+    public async Task ResolvesIndirectStreamLength()
+    {
+        await using var source = PdfSources.FromStream(
+            new MemoryStream(BuildIndirectLengthFixture()),
+            "indirect-length.pdf",
+            "indirect-length");
+        var document = await PdfParser.ParseAsync(source);
+        var stream = document.Objects[4].Value as PdfStreamObject;
+
+        await Assert.That(stream).IsNotNull();
+        await Assert.That(Encoding.ASCII.GetString(stream!.EncodedBytes))
+            .IsEqualTo("BT ET");
+    }
+
+    [Test]
     public async Task TypedCatalogAndPageNodesAvoidStringKeys()
     {
         await using var source = PdfSources.FromStream(
@@ -269,6 +284,38 @@ public sealed class PdfParserTests
         return output.ToArray();
 
         void AppendAscii(List<byte> bytes, string text) =>
+            bytes.AddRange(Encoding.ASCII.GetBytes(text));
+    }
+
+    private static byte[] BuildIndirectLengthFixture()
+    {
+        var bodies = new[]
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>",
+            "<< /Length 5 0 R >>\nstream\nBT ET\nendstream",
+            "5",
+        };
+        var output = new List<byte>(Encoding.ASCII.GetBytes("%PDF-1.7\n"));
+        var offsets = new int[bodies.Length + 1];
+        for (var index = 0; index < bodies.Length; index++)
+        {
+            offsets[index + 1] = output.Count;
+            AppendAscii(output, $"{index + 1} 0 obj\n{bodies[index]}\nendobj\n");
+        }
+
+        var xrefOffset = output.Count;
+        AppendAscii(output, $"xref\n0 {offsets.Length}\n0000000000 65535 f \n");
+        for (var index = 1; index < offsets.Length; index++)
+            AppendAscii(output, $"{offsets[index]:D10} 00000 n \n");
+        AppendAscii(
+            output,
+            $"trailer\n<< /Size {offsets.Length} /Root 1 0 R >>\n"
+            + $"startxref\n{xrefOffset}\n%%EOF\n");
+        return output.ToArray();
+
+        static void AppendAscii(List<byte> bytes, string text) =>
             bytes.AddRange(Encoding.ASCII.GetBytes(text));
     }
 

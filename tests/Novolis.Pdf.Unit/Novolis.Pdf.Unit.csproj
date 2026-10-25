@@ -22,4 +22,7 @@
     <ProjectReference Include="../../src/Novolis.Pdf.Documents/Novolis.Pdf.Documents.csproj" />
     <ProjectReference Include="../../src/Novolis.Pdf.Platform/Novolis.Pdf.Platform.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Fixtures\generated\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

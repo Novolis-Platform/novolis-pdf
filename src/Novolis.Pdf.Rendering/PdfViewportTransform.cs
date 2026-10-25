@@ -5,6 +5,29 @@ namespace Novolis.Pdf.Rendering;
 /// <summary>View matrices that map PDF user space onto a device canvas.</summary>
 public static class PdfViewportTransform
 {
+    /// <summary>Fits a resolved crop box, rotation, and origin to a viewport.</summary>
+    public static PdfMatrix FitPage(
+        PdfPageInfo page,
+        double viewportWidth,
+        double viewportHeight,
+        double zoom = 1)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        var mediaWidth = page.DisplayWidth > 0 ? page.DisplayWidth : 612;
+        var mediaHeight = page.DisplayHeight > 0 ? page.DisplayHeight : 792;
+        var paneWidth = System.Math.Max(1, viewportWidth);
+        var paneHeight = System.Math.Max(1, viewportHeight);
+        var fit = System.Math.Min(paneWidth / mediaWidth, paneHeight / mediaHeight);
+        var scale = fit * System.Math.Clamp(zoom, 0.5, 4);
+        var drawnWidth = mediaWidth * scale;
+        var drawnHeight = mediaHeight * scale;
+        var originX = (paneWidth - drawnWidth) / 2;
+        var originY = (paneHeight - drawnHeight) / 2;
+        return new PdfMatrix(scale, 0, 0, scale, originX, originY)
+            .Multiply(new PdfMatrix(1, 0, 0, -1, 0, mediaHeight))
+            .Multiply(PageSpace(page));
+    }
+
     /// <summary>Y-up PDF page to Y-down canvas, then scale and center.</summary>
     public static PdfMatrix FitPage(
         double pageWidth,
@@ -34,6 +57,33 @@ public static class PdfViewportTransform
         var scale = System.Math.Max(0.01, dotsPerInch / 72d);
         var flip = new PdfMatrix(1, 0, 0, -1, 0, pageHeight);
         return new PdfMatrix(scale, 0, 0, scale, 0, 0).Multiply(flip);
+    }
+
+    /// <summary>Maps a resolved crop box and native rotation to raster pixels.</summary>
+    public static PdfMatrix Raster(PdfPageInfo page, double dotsPerInch)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        var scale = System.Math.Max(0.01, dotsPerInch / 72d);
+        var flip = new PdfMatrix(1, 0, 0, -1, 0, page.DisplayHeight);
+        return new PdfMatrix(scale, 0, 0, scale, 0, 0)
+            .Multiply(flip)
+            .Multiply(PageSpace(page));
+    }
+
+    private static PdfMatrix PageSpace(PdfPageInfo page)
+    {
+        var crop = page.CropBox;
+        var translate = new PdfMatrix(1, 0, 0, 1, -crop.Left, -crop.Bottom);
+        return page.NormalizedRotation switch
+        {
+            90 => new PdfMatrix(0, -1, 1, 0, 0, crop.Width)
+                .Multiply(translate),
+            180 => new PdfMatrix(-1, 0, 0, -1, crop.Width, crop.Height)
+                .Multiply(translate),
+            270 => new PdfMatrix(0, 1, -1, 0, crop.Height, 0)
+                .Multiply(translate),
+            _ => translate,
+        };
     }
 
     /// <summary>Fit the page width to the viewport; height may extend past the pane.</summary>

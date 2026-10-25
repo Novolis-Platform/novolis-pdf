@@ -49,4 +49,24 @@ public sealed class PdfSkiaRendererTests
 
         await Assert.That(right.X).IsEqualTo(800).Within(0.5);
     }
+
+    [Test]
+    public async Task RasterTransformHonorsCropOriginAndNativeRotation()
+    {
+        var page = new PdfPageInfo(
+            0,
+            new PdfRect(0, 0, 400, 500),
+            new PdfRect(10, 20, 210, 320),
+            Rotation: 90);
+        var view = PdfViewportTransform.Raster(page, 72);
+        var cropBottomLeft = view.Transform(new PdfPoint(10, 20));
+        var cropTopRight = view.Transform(new PdfPoint(210, 320));
+
+        await Assert.That(page.DisplayWidth).IsEqualTo(300);
+        await Assert.That(page.DisplayHeight).IsEqualTo(200);
+        await Assert.That(cropBottomLeft.X).IsEqualTo(0).Within(0.01);
+        await Assert.That(cropBottomLeft.Y).IsEqualTo(0).Within(0.01);
+        await Assert.That(cropTopRight.X).IsEqualTo(300).Within(0.01);
+        await Assert.That(cropTopRight.Y).IsEqualTo(200).Within(0.01);
+    }
 }

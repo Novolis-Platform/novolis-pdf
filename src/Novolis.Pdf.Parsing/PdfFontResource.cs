@@ -23,6 +23,18 @@ public sealed class PdfFontResource
     /// <summary>Font encoding name when it is a name object.</summary>
     public PdfName? Encoding => Dictionary.GetName(PdfNames.Encoding);
 
+    /// <summary>Encoding dictionary when the font uses custom differences.</summary>
+    public PdfDictionaryObject? EncodingDictionary =>
+        _document.ResolveDictionary(Dictionary.Get(PdfNames.Encoding));
+
+    /// <summary>Base encoding named by a custom encoding dictionary.</summary>
+    public PdfName? BaseEncoding =>
+        EncodingDictionary?.GetName(PdfNames.BaseEncoding);
+
+    /// <summary>Custom code-to-glyph differences.</summary>
+    public PdfArrayObject? EncodingDifferences =>
+        EncodingDictionary?.GetArray(PdfNames.Differences);
+
     /// <summary>Whether the font is a Type 0 composite font.</summary>
     public bool IsType0 => Subtype == PdfNames.Type0;
 

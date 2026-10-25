@@ -12,10 +12,20 @@ public sealed record PdfOpenOptions
     /// <summary>Whether optional malformed structures should produce diagnostics.</summary>
     public bool CollectDiagnostics { get; init; } = true;
 
+    /// <summary>Provides passwords for protected documents without persisting them.</summary>
+    public PdfPasswordProvider? PasswordProvider { get; init; }
+
+    /// <summary>Maximum number of password attempts for one open operation.</summary>
+    public int MaximumPasswordAttempts { get; init; } = 3;
+
     /// <summary>Validates the options before a read begins.</summary>
     public void Validate()
     {
         ArgumentNullException.ThrowIfNull(Limits);
         Limits.Validate();
+        if (MaximumPasswordAttempts is < 1 or > 8)
+            throw new ArgumentOutOfRangeException(
+                nameof(MaximumPasswordAttempts),
+                "Password attempts must be between 1 and 8.");
     }
 }

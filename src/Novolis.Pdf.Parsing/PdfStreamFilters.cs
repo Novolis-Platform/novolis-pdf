@@ -30,6 +30,42 @@ public static class PdfStreamFilters
             return true;
         }
 
+        if (name == PdfNames.LzwDecode || name == PdfNames.Lzw)
+        {
+            filter = PdfStreamFilter.LzwDecode;
+            return true;
+        }
+
+        if (name == PdfNames.Crypt)
+        {
+            filter = PdfStreamFilter.Crypt;
+            return true;
+        }
+
+        if (name == PdfNames.DctDecode)
+        {
+            filter = PdfStreamFilter.DctDecode;
+            return true;
+        }
+
+        if (name == PdfNames.CcittFaxDecode)
+        {
+            filter = PdfStreamFilter.CcittFaxDecode;
+            return true;
+        }
+
+        if (name == PdfNames.JpxDecode)
+        {
+            filter = PdfStreamFilter.JpxDecode;
+            return true;
+        }
+
+        if (name == PdfNames.Jbig2Decode)
+        {
+            filter = PdfStreamFilter.Jbig2Decode;
+            return true;
+        }
+
         filter = PdfStreamFilter.Unknown;
         return false;
     }

@@ -58,7 +58,9 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         var scale = request.DotsPerInch / 72d * System.Math.Max(0.01, native.UserUnit);
         var width = System.Math.Clamp((int)System.Math.Ceiling(native.DisplayWidth * scale), 1, 16_384);
         var height = System.Math.Clamp((int)System.Math.Ceiling(native.DisplayHeight * scale), 1, 16_384);
-        var view = PdfViewportTransform.Raster(native.DisplayHeight, request.DotsPerInch * native.UserUnit);
+        var view = PdfViewportTransform.Raster(
+            native,
+            request.DotsPerInch * native.UserUnit);
         return ValueTask.FromResult(
             Rasterize(document, page, plan, view, width, height, request.Rotation, cancellationToken));
     }
@@ -89,6 +91,9 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
                 case PdfPathCommand path:
                     DrawPath(canvas, paint, path);
                     break;
+                case PdfClipCommand clip:
+                    DrawClip(canvas, clip);
+                    break;
                 case PdfTextCommand text:
                     DrawText(canvas, paint, document, page, text);
                     break;
@@ -99,6 +104,27 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         }
 
         canvas.Restore();
+    }
+
+    private static void DrawClip(SKCanvas canvas, PdfClipCommand command)
+    {
+        using var builder = new SKPathBuilder();
+        for (var index = 0; index < command.Points.Count; index++)
+        {
+            var point = command.Points[index];
+            if (index == 0)
+                builder.MoveTo((float)point.X, (float)point.Y);
+            else
+                builder.LineTo((float)point.X, (float)point.Y);
+        }
+
+        if (command.Points.Count > 2)
+            builder.Close();
+        using var path = builder.Detach();
+        path.FillType = command.EvenOdd
+            ? SKPathFillType.EvenOdd
+            : SKPathFillType.Winding;
+        canvas.ClipPath(path);
     }
 
     /// <summary>Paints the current page into a viewport-sized bitmap (zoom is a view transform).</summary>
@@ -121,8 +147,7 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         var paintWidth = viewRotation is 90 or 270 ? cellHeight : cellWidth;
         var paintHeight = viewRotation is 90 or 270 ? cellWidth : cellHeight;
         var view = PdfViewportTransform.FitPage(
-            native.DisplayWidth,
-            native.DisplayHeight,
+            native,
             paintWidth,
             paintHeight,
             zoom);
@@ -148,8 +173,7 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         var paintWidth = viewRotation is 90 or 270 ? cellHeight : cellWidth;
         var paintHeight = viewRotation is 90 or 270 ? cellWidth : cellHeight;
         var view = PdfViewportTransform.FitPage(
-            native.DisplayWidth,
-            native.DisplayHeight,
+            native,
             paintWidth,
             paintHeight,
             zoom: 1);
@@ -357,16 +381,25 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         canvas.SetMatrix(PdfSkiaCanvas.ToSkia(pageView.Multiply(command.Matrix)));
         canvas.DrawBitmap(
             bitmap,
-            new SKRect(0, 0, 1, 1),
+            new SKRect(0, 0, bitmap.Width, bitmap.Height),
             new SKSamplingOptions(SKFilterMode.Linear));
         canvas.Restore();
     }
 
     private static SKBitmap CreateBitmap(PdfImageCommand command)
     {
+        if (command.EncodedImage is { Length: > 0 })
+        {
+            var encoded = SKBitmap.Decode(command.EncodedImage);
+            return encoded
+                ?? throw new InvalidDataException("The embedded PDF image could not be decoded.");
+        }
+
         var byteCount = checked(command.Width * command.Height * 4);
         var rgba = new byte[byteCount];
-        var components = command.PixelFormat switch
+        var components = command.Palette is not null
+            ? 1
+            : command.PixelFormat switch
         {
             PdfImagePixelFormat.Gray => 1,
             PdfImagePixelFormat.Rgb => 3,
@@ -381,23 +414,27 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
             {
                 var sample = ((sourceY * command.Width) + x) * components;
                 var destination = ((targetY * command.Width) + x) * 4;
-                var (red, green, blue) = command.PixelFormat switch
-                {
-                    PdfImagePixelFormat.Gray =>
-                        (ReadSample(command.Samples, sample, command.BitsPerComponent),
-                         ReadSample(command.Samples, sample, command.BitsPerComponent),
-                         ReadSample(command.Samples, sample, command.BitsPerComponent)),
-                    PdfImagePixelFormat.Rgb =>
-                        (ReadSample(command.Samples, sample, command.BitsPerComponent),
-                         ReadSample(command.Samples, sample + 1, command.BitsPerComponent),
-                         ReadSample(command.Samples, sample + 2, command.BitsPerComponent)),
-                    PdfImagePixelFormat.Cmyk => CmykToRgb(
-                        ReadSample(command.Samples, sample, command.BitsPerComponent),
-                        ReadSample(command.Samples, sample + 1, command.BitsPerComponent),
-                        ReadSample(command.Samples, sample + 2, command.BitsPerComponent),
-                        ReadSample(command.Samples, sample + 3, command.BitsPerComponent)),
-                    _ => throw new InvalidOperationException("Unsupported PDF image pixel format."),
-                };
+                var (red, green, blue) = command.Palette is { Length: > 0 } palette
+                    ? IndexedToRgb(
+                        ReadSample(command.Samples, sample, command.BitsPerComponent, command.InvertSamples),
+                        palette)
+                    : command.PixelFormat switch
+                    {
+                        PdfImagePixelFormat.Gray =>
+                            (ReadSample(command.Samples, sample, command.BitsPerComponent, command.InvertSamples),
+                             ReadSample(command.Samples, sample, command.BitsPerComponent, command.InvertSamples),
+                             ReadSample(command.Samples, sample, command.BitsPerComponent, command.InvertSamples)),
+                        PdfImagePixelFormat.Rgb =>
+                            (ReadSample(command.Samples, sample, command.BitsPerComponent, command.InvertSamples),
+                             ReadSample(command.Samples, sample + 1, command.BitsPerComponent, command.InvertSamples),
+                             ReadSample(command.Samples, sample + 2, command.BitsPerComponent, command.InvertSamples)),
+                        PdfImagePixelFormat.Cmyk => CmykToRgb(
+                            ReadSample(command.Samples, sample, command.BitsPerComponent, command.InvertSamples),
+                            ReadSample(command.Samples, sample + 1, command.BitsPerComponent, command.InvertSamples),
+                            ReadSample(command.Samples, sample + 2, command.BitsPerComponent, command.InvertSamples),
+                            ReadSample(command.Samples, sample + 3, command.BitsPerComponent, command.InvertSamples)),
+                        _ => throw new InvalidOperationException("Unsupported PDF image pixel format."),
+                    };
                 rgba[destination] = red;
                 rgba[destination + 1] = green;
                 rgba[destination + 2] = blue;
@@ -415,10 +452,25 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         return bitmap;
     }
 
-    private static byte ReadSample(byte[] samples, int componentIndex, int bitsPerComponent)
+    private static (byte Red, byte Green, byte Blue) IndexedToRgb(
+        byte index,
+        byte[] palette)
+    {
+        var offset = System.Math.Min(index * 3, System.Math.Max(0, palette.Length - 3));
+        return (palette[offset], palette[offset + 1], palette[offset + 2]);
+    }
+
+    private static byte ReadSample(
+        byte[] samples,
+        int componentIndex,
+        int bitsPerComponent,
+        bool invert)
     {
         if (bitsPerComponent == 8)
-            return componentIndex < samples.Length ? samples[componentIndex] : (byte)0;
+        {
+            var sample = componentIndex < samples.Length ? samples[componentIndex] : (byte)0;
+            return invert ? (byte)(byte.MaxValue - sample) : sample;
+        }
 
         var bitIndex = checked(componentIndex * bitsPerComponent);
         var byteIndex = bitIndex / 8;
@@ -427,7 +479,8 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
             return 0;
         var mask = (1 << bitsPerComponent) - 1;
         var value = (samples[byteIndex] >> shift) & mask;
-        return (byte)(value * byte.MaxValue / mask);
+        var result = (byte)(value * byte.MaxValue / mask);
+        return invert ? (byte)(byte.MaxValue - result) : result;
     }
 
     private static (byte Red, byte Green, byte Blue) CmykToRgb(

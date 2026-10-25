@@ -21,21 +21,14 @@ public static class PdfContentStreamInterpreter
 
         var commands = new List<PdfDrawCommand>();
         var diagnostics = new List<PdfDiagnosticEntry>();
+        var content = new List<byte>();
         foreach (var stream in page.Contents)
         {
             try
             {
                 var bytes = PdfStreamDecoder.Decode(stream, limits);
-                Interpret(
-                    bytes,
-                    page.Info.Index,
-                    commands,
-                    diagnostics,
-                    limits,
-                    document,
-                    page.Resources,
-                    PdfMatrix.Identity,
-                    formDepth: 0);
+                content.AddRange(bytes);
+                content.Add((byte)'\n');
             }
             catch (PdfReaderException exception)
             {
@@ -50,6 +43,20 @@ public static class PdfContentStreamInterpreter
                     PageIndex: page.Info.Index,
                     Exception: exception));
             }
+        }
+
+        if (content.Count > 0)
+        {
+            Interpret(
+                content.ToArray(),
+                page.Info.Index,
+                commands,
+                diagnostics,
+                limits,
+                document,
+                page.Resources,
+                PdfMatrix.Identity,
+                formDepth: 0);
         }
 
         return new PdfPageRenderPlan(page.Info, commands, diagnostics);
@@ -164,9 +171,10 @@ public static class PdfContentStreamInterpreter
                     break;
                 case "W":
                 case "W*":
-                    // The first raster backend does not maintain a clip stack.
-                    // Discarding the pending path still keeps subsequent drawing
-                    // commands aligned with the content stream.
+                    if (path.Count >= 3)
+                        commands.Add(new PdfClipCommand(path.ToArray(), operation == "W*"));
+                    path.Clear();
+                    closed = false;
                     operands.Clear();
                     break;
                 case "n":
@@ -191,6 +199,8 @@ public static class PdfContentStreamInterpreter
                     break;
                 case "B":
                 case "b":
+                case "B*":
+                case "b*":
                     EmitPath(commands, path, closed, fill: true, stroke: true, strokeWidth, fillColor, strokeColor);
                     path.Clear();
                     closed = false;
@@ -214,6 +224,14 @@ public static class PdfContentStreamInterpreter
                     break;
                 case "G" when TryNumbers(operands, 1, out var grayStroke):
                     strokeColor = new PdfColor(grayStroke[0], grayStroke[0], grayStroke[0]);
+                    operands.Clear();
+                    break;
+                case "k" when TryNumbers(operands, 4, out var fillCmyk):
+                    fillColor = Cmyk(fillCmyk);
+                    operands.Clear();
+                    break;
+                case "K" when TryNumbers(operands, 4, out var strokeCmyk):
+                    strokeColor = Cmyk(strokeCmyk);
                     operands.Clear();
                     break;
                 case "gs":
@@ -332,6 +350,29 @@ public static class PdfContentStreamInterpreter
                         "PDF031",
                         "An image/form XObject was skipped by the first raster backend.",
                         PageIndex: pageIndex));
+                    operands.Clear();
+                    break;
+                case "BI":
+                    if (reader.TryReadInlineImage(out var inlineDictionary, out var inlineBytes))
+                    {
+                        var inlineStream = new PdfStreamObject(
+                            NormalizeInlineImageDictionary(inlineDictionary),
+                            inlineBytes);
+                        if (TryCreateImage(
+                                document,
+                                inlineStream,
+                                ctm,
+                                pageIndex,
+                                limits,
+                                out var inlineImage,
+                                out var inlineDiagnostic))
+                        {
+                            commands.Add(inlineImage!);
+                        }
+
+                        if (inlineDiagnostic is not null)
+                            diagnostics.Add(inlineDiagnostic);
+                    }
                     operands.Clear();
                     break;
                 default:
@@ -487,7 +528,18 @@ public static class PdfContentStreamInterpreter
                 return false;
             }
 
-            var format = ResolveImageFormat(document, stream.Dictionary.Get(PdfNames.ColorSpace));
+            var imageMask = stream.Dictionary.Get<PdfBooleanObject>(PdfNames.ImageMask)?.Value == true;
+            var palette = imageMask
+                ? null
+                : ResolveIndexedPalette(
+                    document,
+                    stream.Dictionary.Get(PdfNames.ColorSpace),
+                    limits);
+            var format = imageMask
+                ? PdfImagePixelFormat.Gray
+                : palette is not null
+                    ? PdfImagePixelFormat.Gray
+                : ResolveImageFormat(document, stream.Dictionary.Get(PdfNames.ColorSpace));
             if (format is null)
             {
                 diagnostic = ImageDiagnostic(
@@ -497,13 +549,18 @@ public static class PdfContentStreamInterpreter
                 return false;
             }
 
-            var components = format switch
+            var components = palette is not null
+                ? 1
+                : format switch
             {
                 PdfImagePixelFormat.Gray => 1,
                 PdfImagePixelFormat.Rgb => 3,
                 PdfImagePixelFormat.Cmyk => 4,
                 _ => 0,
             };
+            var invertSamples = IsReversedDecode(
+                stream.Dictionary.Get(PdfNames.Decode),
+                components);
             var sampleBits = checked((long)width * height * components * bits);
             var sampleBytes = checked((sampleBits + 7) / 8);
             var pixelLimit = checked((long)width * height);
@@ -514,6 +571,19 @@ public static class PdfContentStreamInterpreter
                     "PDF036",
                     $"Image XObject exceeds the configured {limits.MaximumImagePixels:N0}-pixel limit.");
                 return false;
+            }
+
+            if (HasFilter(stream.Dictionary.Get(PdfNames.Filter), PdfStreamFilter.DctDecode))
+            {
+                image = new PdfImageCommand(
+                    [],
+                    width,
+                    height,
+                    bits,
+                    PdfImagePixelFormat.Rgb,
+                    ctm,
+                    stream.EncodedBytes.ToArray());
+                return true;
             }
 
             var samples = PdfStreamDecoder.Decode(stream, limits);
@@ -532,7 +602,9 @@ public static class PdfContentStreamInterpreter
                 height,
                 bits,
                 format.Value,
-                ctm);
+                ctm,
+                InvertSamples: invertSamples,
+                Palette: palette);
             return true;
         }
         catch (PdfReaderException exception)
@@ -567,6 +639,99 @@ public static class PdfContentStreamInterpreter
         };
     }
 
+    private static byte[]? ResolveIndexedPalette(
+        PdfParsedDocument document,
+        PdfObject? value,
+        PdfLimits limits)
+    {
+        if (document.Resolve(value) is not PdfArrayObject array
+            || array.Items.Count < 4
+            || array.Items[0] is not PdfNameObject indexed
+            || indexed.Value != "Indexed"
+            || document.Resolve(array.Items[1]) is not PdfNameObject baseName
+            || baseName.Value is not ("DeviceRGB" or "RGB"))
+        {
+            return null;
+        }
+
+        var highValue = document.Resolve(array.Items[2]) as PdfNumberObject;
+        if (highValue is null
+            || highValue.Value is < 0 or > 255
+            || highValue.Value != System.Math.Truncate(highValue.Value))
+        {
+            return null;
+        }
+
+        var lookup = document.Resolve(array.Items[3]) switch
+        {
+            PdfStringObject text => text.Bytes,
+            PdfStreamObject stream => PdfStreamDecoder.Decode(stream, limits),
+            _ => null,
+        };
+        var required = checked(((int)highValue.Value + 1) * 3);
+        return lookup is { Length: >= 1 }
+            && lookup.Length >= required
+            ? lookup[..required]
+            : null;
+    }
+
+    private static bool HasFilter(PdfObject? value, PdfStreamFilter expected) =>
+        value switch
+        {
+            PdfNameObject name
+                => PdfStreamFilters.TryParse(name.AsName(), out var filter)
+                    && filter == expected,
+            PdfArrayObject array
+                => array.Items
+                    .OfType<PdfNameObject>()
+                    .Any(item =>
+                        PdfStreamFilters.TryParse(item.AsName(), out var filter)
+                        && filter == expected),
+            _ => false,
+        };
+
+    private static bool IsReversedDecode(PdfObject? value, int components)
+    {
+        var values = value switch
+        {
+            PdfArrayObject array => array.Items.OfType<PdfNumberObject>()
+                .Select(static item => item.Value)
+                .ToArray(),
+            _ => [],
+        };
+        if (values.Length < components * 2)
+            return false;
+        for (var index = 0; index < components; index++)
+        {
+            if (values[index * 2] > values[(index * 2) + 1])
+                return true;
+        }
+
+        return false;
+    }
+
+    private static PdfDictionaryObject NormalizeInlineImageDictionary(
+        PdfDictionaryObject dictionary)
+    {
+        var values = new Dictionary<string, PdfObject>(dictionary.Values, StringComparer.Ordinal);
+        CopyAbbreviation("W", PdfNames.Width.Value);
+        CopyAbbreviation("H", PdfNames.Height.Value);
+        CopyAbbreviation("BPC", PdfNames.BitsPerComponent.Value);
+        CopyAbbreviation("CS", PdfNames.ColorSpace.Value);
+        CopyAbbreviation("F", PdfNames.Filter.Value);
+        CopyAbbreviation("D", PdfNames.DecodeParms.Value);
+        return new PdfDictionaryObject(values);
+
+        void CopyAbbreviation(string abbreviation, string fullName)
+        {
+            if (!values.ContainsKey(fullName)
+                && values.TryGetValue(abbreviation, out var value))
+            {
+                values[fullName] = value;
+            }
+        }
+    }
+
     private static PdfDiagnosticEntry ImageDiagnostic(
         int pageIndex,
         string code,
@@ -578,6 +743,18 @@ public static class PdfContentStreamInterpreter
             message,
             PageIndex: pageIndex,
             Exception: exception);
+
+    private static PdfColor Cmyk(IReadOnlyList<double> values)
+    {
+        var cyan = System.Math.Clamp(values[0], 0, 1);
+        var magenta = System.Math.Clamp(values[1], 0, 1);
+        var yellow = System.Math.Clamp(values[2], 0, 1);
+        var black = System.Math.Clamp(values[3], 0, 1);
+        return new PdfColor(
+            1 - System.Math.Min(1, cyan + black),
+            1 - System.Math.Min(1, magenta + black),
+            1 - System.Math.Min(1, yellow + black));
+    }
 
     private static PdfMatrix ReadMatrix(PdfArrayObject? array)
     {
@@ -699,6 +876,46 @@ public static class PdfContentStreamInterpreter
         private readonly int _maximumDepth = maximumDepth;
         private int _position;
 
+        public bool TryReadInlineImage(
+            out PdfDictionaryObject dictionary,
+            out byte[] bytes)
+        {
+            var values = new Dictionary<string, PdfObject>(StringComparer.Ordinal);
+            while (true)
+            {
+                SkipWhitespaceAndComments();
+                if (TryReadKeyword("ID"))
+                    break;
+                if (_position >= _data.Length || _data[_position] != (byte)'/')
+                    throw new InvalidDataException("Inline image dictionary is malformed.");
+                var name = ReadName();
+                values[name] = ReadObject(0);
+            }
+
+            if (_position < _data.Length && IsWhitespace(_data[_position]))
+                _position++;
+            var start = _position;
+            var end = -1;
+            for (var index = start + 1; index + 2 < _data.Length; index++)
+            {
+                if (_data[index] != (byte)'E' || _data[index + 1] != (byte)'I')
+                    continue;
+                if (!IsWhitespace(_data[index - 1]) || !IsWhitespace(_data[index + 2]))
+                    continue;
+                end = index;
+                break;
+            }
+
+            if (end < start)
+                throw new EndOfStreamException("Inline image has no EI marker.");
+            while (end > start && IsWhitespace(_data[end - 1]))
+                end--;
+            bytes = _data.AsSpan(start, end - start).ToArray();
+            _position = end + 2;
+            dictionary = new PdfDictionaryObject(values);
+            return true;
+        }
+
         public bool TryRead(out PdfObject? value, out string? operation)
         {
             SkipWhitespaceAndComments();
@@ -725,6 +942,24 @@ public static class PdfContentStreamInterpreter
                 _position++;
             operation = Encoding.ASCII.GetString(_data, start, _position - start);
             return operation.Length > 0;
+        }
+
+        private bool TryReadKeyword(string keyword)
+        {
+            if (_position + keyword.Length > _data.Length)
+                return false;
+            if (!Encoding.ASCII.GetBytes(keyword)
+                    .AsSpan()
+                    .SequenceEqual(_data.AsSpan(_position, keyword.Length)))
+            {
+                return false;
+            }
+
+            var after = _position + keyword.Length;
+            if (after < _data.Length && !IsDelimiter(_data[after]))
+                return false;
+            _position = after;
+            return true;
         }
 
         private PdfObject ReadObject(int depth)
