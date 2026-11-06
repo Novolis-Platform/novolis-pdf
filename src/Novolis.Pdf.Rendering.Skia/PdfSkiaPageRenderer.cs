@@ -379,9 +379,10 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         var pageView = PdfSkiaCanvas.FromSkia(canvas.TotalMatrix);
         canvas.Save();
         canvas.SetMatrix(PdfSkiaCanvas.ToSkia(pageView.Multiply(command.Matrix)));
+        // PDF image XObjects paint the unit square; command.Matrix already maps that square to page space.
         canvas.DrawBitmap(
             bitmap,
-            new SKRect(0, 0, bitmap.Width, bitmap.Height),
+            new SKRect(0, 0, 1, 1),
             new SKSamplingOptions(SKFilterMode.Linear));
         canvas.Restore();
     }
