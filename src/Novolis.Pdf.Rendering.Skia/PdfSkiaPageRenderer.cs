@@ -72,6 +72,17 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         PdfResolvedPage page,
         PdfPageRenderPlan plan,
         PdfMatrix view,
+        CancellationToken cancellationToken = default) =>
+        Paint(canvas, document, page, plan, view, PdfPaintFlags.All, cancellationToken);
+
+    /// <summary>Paints selected command kinds (e.g. <see cref="PdfPaintFlags.ImagesOnly"/> for map tiles).</summary>
+    public void Paint(
+        SKCanvas canvas,
+        PdfParsedDocument document,
+        PdfResolvedPage page,
+        PdfPageRenderPlan plan,
+        PdfMatrix view,
+        PdfPaintFlags flags,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(canvas);
@@ -88,16 +99,16 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
             cancellationToken.ThrowIfCancellationRequested();
             switch (command)
             {
-                case PdfPathCommand path:
+                case PdfPathCommand path when flags.HasFlag(PdfPaintFlags.Paths):
                     DrawPath(canvas, paint, path);
                     break;
-                case PdfClipCommand clip:
+                case PdfClipCommand clip when flags.HasFlag(PdfPaintFlags.Clips):
                     DrawClip(canvas, clip);
                     break;
-                case PdfTextCommand text:
+                case PdfTextCommand text when flags.HasFlag(PdfPaintFlags.Text):
                     DrawText(canvas, paint, document, page, text);
                     break;
-                case PdfImageCommand image:
+                case PdfImageCommand image when flags.HasFlag(PdfPaintFlags.Images):
                     DrawImage(canvas, image);
                     break;
             }
@@ -375,6 +386,11 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
 
     private static void DrawImage(SKCanvas canvas, PdfImageCommand command)
     {
+        // Stencil / ImageMask must not be painted as opaque grayscale — that wipes Norgeskart tiles
+        // with black/white strips (horizontal seams). Soft-mask stencil support is not wired yet.
+        if (command.IsImageMask)
+            return;
+
         using var bitmap = PdfSkiaImageDecoder.Decode(command);
         var pageView = PdfSkiaCanvas.FromSkia(canvas.TotalMatrix);
         canvas.Save();

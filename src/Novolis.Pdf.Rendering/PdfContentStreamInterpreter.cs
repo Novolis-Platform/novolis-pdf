@@ -582,7 +582,8 @@ public static class PdfContentStreamInterpreter
                     bits,
                     PdfImagePixelFormat.Rgb,
                     ctm,
-                    stream.EncodedBytes.ToArray());
+                    stream.EncodedBytes.ToArray(),
+                    IsImageMask: imageMask);
                 return true;
             }
 
@@ -604,7 +605,8 @@ public static class PdfContentStreamInterpreter
                 format.Value,
                 ctm,
                 InvertSamples: invertSamples,
-                Palette: palette);
+                Palette: palette,
+                IsImageMask: imageMask);
             return true;
         }
         catch (PdfReaderException exception)
