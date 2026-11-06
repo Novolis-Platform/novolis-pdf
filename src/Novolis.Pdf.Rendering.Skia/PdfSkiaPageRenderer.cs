@@ -83,6 +83,21 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         PdfPageRenderPlan plan,
         PdfMatrix view,
         PdfPaintFlags flags,
+        CancellationToken cancellationToken = default) =>
+        Paint(canvas, document, page, plan, view, flags, imageContentKeys: null, cancellationToken);
+
+    /// <summary>
+    /// Paints selected command kinds. When <paramref name="imageContentKeys"/> is set, only images whose
+    /// <see cref="PdfSharedImageFrame.PlacementKey"/> is in the set are drawn (clips/paths/text unchanged).
+    /// </summary>
+    public void Paint(
+        SKCanvas canvas,
+        PdfParsedDocument document,
+        PdfResolvedPage page,
+        PdfPageRenderPlan plan,
+        PdfMatrix view,
+        PdfPaintFlags flags,
+        IReadOnlySet<string>? imageContentKeys,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(canvas);
@@ -99,6 +114,13 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
             cancellationToken.ThrowIfCancellationRequested();
             switch (command)
             {
+                // Always honor q/Q so per-image clips do not accumulate across tiles.
+                case PdfSaveStateCommand:
+                    canvas.Save();
+                    break;
+                case PdfRestoreStateCommand:
+                    canvas.Restore();
+                    break;
                 case PdfPathCommand path when flags.HasFlag(PdfPaintFlags.Paths):
                     DrawPath(canvas, paint, path);
                     break;
@@ -109,6 +131,12 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
                     DrawText(canvas, paint, document, page, text);
                     break;
                 case PdfImageCommand image when flags.HasFlag(PdfPaintFlags.Images):
+                    if (imageContentKeys is not null
+                        && !imageContentKeys.Contains(PdfSharedImageFrame.PlacementKey(image)))
+                    {
+                        break;
+                    }
+
                     DrawImage(canvas, image);
                     break;
             }
@@ -394,8 +422,11 @@ public sealed class PdfSkiaPageRenderer : IPdfPageRenderer
         using var bitmap = PdfSkiaImageDecoder.Decode(command);
         var pageView = PdfSkiaCanvas.FromSkia(canvas.TotalMatrix);
         canvas.Save();
-        canvas.SetMatrix(PdfSkiaCanvas.ToSkia(pageView.Multiply(command.Matrix)));
-        // PDF image XObjects paint the unit square; command.Matrix already maps that square to page space.
+        // PDF: sample row 0 is the TOP of the image. The CTM maps the unit square with (0,0) at the
+        // bottom-left of the image rect, so flip Y inside the unit square before applying CTM.
+        // Without this, each tile is upside-down in its slot and north/south strips no longer join.
+        var imageSpace = new PdfMatrix(1, 0, 0, -1, 0, 1);
+        canvas.SetMatrix(PdfSkiaCanvas.ToSkia(pageView.Multiply(command.Matrix).Multiply(imageSpace)));
         canvas.DrawBitmap(
             bitmap,
             new SKRect(0, 0, 1, 1),

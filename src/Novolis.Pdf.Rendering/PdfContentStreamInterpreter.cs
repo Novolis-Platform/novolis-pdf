@@ -100,6 +100,7 @@ public static class PdfContentStreamInterpreter
             {
                 case "q":
                     graphicsStack.Push(new GraphicsState(ctm, fillColor, strokeColor, strokeWidth));
+                    commands.Add(new PdfSaveStateCommand());
                     operands.Clear();
                     break;
                 case "Q" when graphicsStack.TryPop(out var savedState):
@@ -107,6 +108,7 @@ public static class PdfContentStreamInterpreter
                     fillColor = savedState.FillColor;
                     strokeColor = savedState.StrokeColor;
                     strokeWidth = savedState.StrokeWidth;
+                    commands.Add(new PdfRestoreStateCommand());
                     operands.Clear();
                     break;
                 case "cm" when TryNumbers(operands, 6, out var matrixValues):
@@ -573,6 +575,10 @@ public static class PdfContentStreamInterpreter
                 return false;
             }
 
+            var softMask = imageMask
+                ? null
+                : TryDecodeSoftMask(document, stream.Dictionary.Get(PdfNames.SMask), width, height, limits);
+
             if (HasFilter(stream.Dictionary.Get(PdfNames.Filter), PdfStreamFilter.DctDecode))
             {
                 image = new PdfImageCommand(
@@ -583,7 +589,8 @@ public static class PdfContentStreamInterpreter
                     PdfImagePixelFormat.Rgb,
                     ctm,
                     stream.EncodedBytes.ToArray(),
-                    IsImageMask: imageMask);
+                    IsImageMask: imageMask,
+                    SoftMaskSamples: softMask);
                 return true;
             }
 
@@ -606,7 +613,8 @@ public static class PdfContentStreamInterpreter
                 ctm,
                 InvertSamples: invertSamples,
                 Palette: palette,
-                IsImageMask: imageMask);
+                IsImageMask: imageMask,
+                SoftMaskSamples: softMask);
             return true;
         }
         catch (PdfReaderException exception)
@@ -619,6 +627,69 @@ public static class PdfContentStreamInterpreter
             diagnostic = ImageDiagnostic(pageIndex, "PDF038", exception.Message, exception);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Decodes a companion soft-mask Image XObject to grayscale alphas (0 = transparent).
+    /// Nested soft masks are ignored.
+    /// </summary>
+    private static byte[]? TryDecodeSoftMask(
+        PdfParsedDocument document,
+        PdfObject? value,
+        int width,
+        int height,
+        PdfLimits limits)
+    {
+        if (document.Resolve(value) is not PdfStreamObject maskStream)
+            return null;
+        if (maskStream.Dictionary.GetName(PdfNames.Subtype)?.Value != PdfNames.Image.Value)
+            return null;
+        if (!maskStream.Dictionary.TryGetInteger(PdfNames.Width, out var maskWidth)
+            || !maskStream.Dictionary.TryGetInteger(PdfNames.Height, out var maskHeight)
+            || maskWidth != width
+            || maskHeight != height)
+        {
+            return null;
+        }
+
+        var bits = maskStream.Dictionary.TryGetInteger(PdfNames.BitsPerComponent, out var bitsValue)
+            ? bitsValue
+            : 8;
+        if (bits is not (1 or 8))
+            return null;
+
+        // Soft masks are DeviceGray (or ImageMask); never follow nested /SMask.
+        byte[] samples;
+        try
+        {
+            if (HasFilter(maskStream.Dictionary.Get(PdfNames.Filter), PdfStreamFilter.DctDecode))
+                return null;
+            samples = PdfStreamDecoder.Decode(maskStream, limits);
+        }
+        catch (PdfReaderException)
+        {
+            return null;
+        }
+
+        var expected = bits == 8
+            ? checked((long)width * height)
+            : checked((width * height * bits + 7L) / 8);
+        if (samples.LongLength < expected)
+            return null;
+
+        if (bits == 8)
+            return samples.AsSpan(0, width * height).ToArray();
+
+        // 1-bit → 8-bit alpha
+        var expanded = new byte[width * height];
+        for (var i = 0; i < expanded.Length; i++)
+        {
+            var byteIndex = i / 8;
+            var shift = 7 - (i % 8);
+            expanded[i] = (byte)(((samples[byteIndex] >> shift) & 1) * 255);
+        }
+
+        return expanded;
     }
 
     private static PdfImagePixelFormat? ResolveImageFormat(

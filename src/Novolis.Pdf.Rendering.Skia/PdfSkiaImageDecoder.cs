@@ -4,18 +4,34 @@ using SkiaSharp;
 
 namespace Novolis.Pdf.Rendering.Skia;
 
-/// <summary>Decodes interpreted PDF image commands into Skia bitmaps.</summary>
+/// <summary>
+/// Decodes interpreted PDF image commands into Skia bitmaps.
+/// Sample row 0 stays at bitmap row 0 (PDF / Acrobat top-row-first). The PDF unit-square
+/// Y convention is applied in <see cref="PdfSkiaPageRenderer"/> when painting, not here.
+/// </summary>
 public static class PdfSkiaImageDecoder
 {
-    /// <summary>Builds an RGBA bitmap from decoded image samples or embedded DCT.</summary>
+    /// <summary>Builds an RGBA bitmap from decoded image samples or embedded DCT, applying soft masks.</summary>
     public static SKBitmap Decode(PdfImageCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
+        SKBitmap bitmap;
         if (command.EncodedImage is { Length: > 0 })
         {
-            var encoded = SKBitmap.Decode(command.EncodedImage);
-            return encoded
+            bitmap = SKBitmap.Decode(command.EncodedImage)
                 ?? throw new InvalidDataException("The embedded PDF image could not be decoded.");
+            if (bitmap.Width != command.Width || bitmap.Height != command.Height)
+            {
+                using var wrong = bitmap;
+                throw new InvalidDataException(
+                    $"Embedded image decoded to {bitmap.Width}×{bitmap.Height}, expected {command.Width}×{command.Height}.");
+            }
+
+            if (command.SoftMaskSamples is null)
+                return EnsureRgba(bitmap);
+
+            using (bitmap)
+                return ApplySoftMask(EnsureRgba(bitmap), command.SoftMaskSamples, command.Width, command.Height);
         }
 
         var byteCount = checked(command.Width * command.Height * 4);
@@ -30,13 +46,12 @@ public static class PdfSkiaImageDecoder
                 _ => throw new InvalidOperationException("Unsupported PDF image pixel format."),
             };
 
-        for (var sourceY = 0; sourceY < command.Height; sourceY++)
+        for (var y = 0; y < command.Height; y++)
         {
-            var targetY = command.Height - 1 - sourceY;
             for (var x = 0; x < command.Width; x++)
             {
-                var sample = ((sourceY * command.Width) + x) * components;
-                var destination = ((targetY * command.Width) + x) * 4;
+                var sample = ((y * command.Width) + x) * components;
+                var destination = ((y * command.Width) + x) * 4;
                 var (red, green, blue) = command.Palette is { Length: > 0 } palette
                     ? IndexedToRgb(
                         ReadSample(command.Samples, sample, command.BitsPerComponent, command.InvertSamples),
@@ -58,21 +73,64 @@ public static class PdfSkiaImageDecoder
                             ReadSample(command.Samples, sample + 3, command.BitsPerComponent, command.InvertSamples)),
                         _ => throw new InvalidOperationException("Unsupported PDF image pixel format."),
                     };
+                var alpha = SoftMaskAlpha(command.SoftMaskSamples, x, y, command.Width);
                 rgba[destination] = red;
                 rgba[destination + 1] = green;
                 rgba[destination + 2] = blue;
-                rgba[destination + 3] = byte.MaxValue;
+                rgba[destination + 3] = alpha;
             }
         }
 
-        var bitmap = new SKBitmap(
+        bitmap = new SKBitmap(
             new SKImageInfo(
                 command.Width,
                 command.Height,
                 SKColorType.Rgba8888,
-                SKAlphaType.Premul));
+                SKAlphaType.Unpremul));
         Marshal.Copy(rgba, 0, bitmap.GetPixels(), rgba.Length);
         return bitmap;
+    }
+
+    private static SKBitmap EnsureRgba(SKBitmap source)
+    {
+        if (source.ColorType == SKColorType.Rgba8888 && source.AlphaType != SKAlphaType.Opaque)
+            return source;
+
+        var copy = new SKBitmap(
+            new SKImageInfo(source.Width, source.Height, SKColorType.Rgba8888, SKAlphaType.Unpremul));
+        using var canvas = new SKCanvas(copy);
+        canvas.Clear(SKColors.Transparent);
+        canvas.DrawBitmap(source, 0, 0, new SKSamplingOptions(SKFilterMode.Nearest));
+        source.Dispose();
+        return copy;
+    }
+
+    private static SKBitmap ApplySoftMask(SKBitmap rgba, byte[] softMask, int width, int height)
+    {
+        var info = rgba.Info;
+        var pixels = new byte[info.BytesSize];
+        Marshal.Copy(rgba.GetPixels(), pixels, 0, pixels.Length);
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var i = (y * width) + x;
+                pixels[(i * 4) + 3] = i < softMask.Length ? softMask[i] : byte.MaxValue;
+            }
+        }
+
+        var result = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul));
+        Marshal.Copy(pixels, 0, result.GetPixels(), pixels.Length);
+        rgba.Dispose();
+        return result;
+    }
+
+    private static byte SoftMaskAlpha(byte[]? softMask, int x, int y, int width)
+    {
+        if (softMask is null)
+            return byte.MaxValue;
+        var index = (y * width) + x;
+        return index < softMask.Length ? softMask[index] : byte.MaxValue;
     }
 
     private static (byte Red, byte Green, byte Blue) IndexedToRgb(byte index, byte[] palette)

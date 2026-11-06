@@ -18,7 +18,7 @@ public static class PdfMapPageRasterizer
         PdfResolvedPage page,
         double dpi,
         PdfPaintFlags flags = PdfPaintFlags.ImagesOnly) =>
-        RasterCropped(document, page, dpi, frame: null, flags);
+        RasterCropped(document, page, dpi, frame: null, flags, imageContentKeys: null);
 
     /// <summary>
     /// Rasters the page and crops to <paramref name="frame"/> when supplied (shared stack alignment).
@@ -29,7 +29,20 @@ public static class PdfMapPageRasterizer
         PdfResolvedPage page,
         double dpi,
         PdfMapContentFrame? frame,
-        PdfPaintFlags flags = PdfPaintFlags.ImagesOnly)
+        PdfPaintFlags flags = PdfPaintFlags.ImagesOnly) =>
+        RasterCropped(document, page, dpi, frame, flags, imageContentKeys: null);
+
+    /// <summary>
+    /// Rasters the page, optionally restricting which embedded images are painted via content keys
+    /// (use <see cref="PdfSharedImageFrame.MatchingContentKeys"/> so relief-only soft-masked tiles cannot wipe the shared map).
+    /// </summary>
+    public static PdfMapRasterResult RasterCropped(
+        PdfParsedDocument document,
+        PdfResolvedPage page,
+        double dpi,
+        PdfMapContentFrame? frame,
+        PdfPaintFlags flags,
+        IReadOnlySet<string>? imageContentKeys)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(page);
@@ -46,7 +59,14 @@ public static class PdfMapPageRasterizer
 
         using var full = new SKBitmap(fullWidth, fullHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
         using (var canvas = new SKCanvas(full))
-            new PdfSkiaPageRenderer().Paint(canvas, document, page, plan, view, flags);
+            new PdfSkiaPageRenderer().Paint(
+                canvas,
+                document,
+                page,
+                plan,
+                view,
+                flags,
+                imageContentKeys);
 
         var cropLeft = cropFrame.Left * scale;
         var cropTop = (info.DisplayHeight - cropFrame.Top) * scale;

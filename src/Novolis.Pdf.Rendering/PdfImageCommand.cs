@@ -13,4 +13,5 @@ public sealed record PdfImageCommand(
     byte[]? EncodedImage = null,
     bool InvertSamples = false,
     byte[]? Palette = null,
-    bool IsImageMask = false) : PdfDrawCommand;
+    bool IsImageMask = false,
+    byte[]? SoftMaskSamples = null) : PdfDrawCommand;

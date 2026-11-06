@@ -249,6 +249,9 @@ public static class PdfNames
     /// <summary>Image mask flag.</summary>
     public static PdfName ImageMask { get; } = new("ImageMask");
 
+    /// <summary>Soft-mask image XObject (alpha).</summary>
+    public static PdfName SMask { get; } = new("SMask");
+
     /// <summary>Image sample decode array.</summary>
     public static PdfName Decode { get; } = new("Decode");
 

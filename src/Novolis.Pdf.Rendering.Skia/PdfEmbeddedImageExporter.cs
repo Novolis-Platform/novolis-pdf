@@ -26,7 +26,7 @@ public static class PdfEmbeddedImageExporter
         foreach (var command in plan.Commands)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (command is not PdfImageCommand image)
+            if (command is not PdfImageCommand image || image.IsImageMask)
                 continue;
 
             using var bitmap = PdfSkiaImageDecoder.Decode(image);
