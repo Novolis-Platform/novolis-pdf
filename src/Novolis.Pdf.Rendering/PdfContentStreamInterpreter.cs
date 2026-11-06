@@ -635,6 +635,8 @@ public static class PdfContentStreamInterpreter
             "DeviceGray" or "G" => PdfImagePixelFormat.Gray,
             "DeviceRGB" or "RGB" => PdfImagePixelFormat.Rgb,
             "DeviceCMYK" or "CMYK" => PdfImagePixelFormat.Cmyk,
+            // Norgeskart print PDFs tile the map as LZW + CalRGB (treated as RGB samples).
+            "CalRGB" => PdfImagePixelFormat.Rgb,
             _ => null,
         };
     }
