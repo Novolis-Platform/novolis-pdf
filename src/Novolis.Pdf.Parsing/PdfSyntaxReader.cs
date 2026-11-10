@@ -218,6 +218,12 @@ internal sealed class PdfSyntaxReader
                 if (Position >= _data.Length)
                     break;
                 var escaped = _data[Position++];
+                if (escaped is >= (byte)'0' and <= (byte)'7')
+                {
+                    bytes.Add(ReadOctalEscape(escaped));
+                    continue;
+                }
+
                 bytes.Add(escaped switch
                 {
                     (byte)'n' => (byte)'\n',
@@ -264,6 +270,24 @@ internal sealed class PdfSyntaxReader
         if (Position < _data.Length && _data[Position] == next)
             Position++;
         return 0;
+    }
+
+    /// <summary>
+    /// Consumes 1–3 octal digits starting with <paramref name="firstDigit"/> (ISO 32000 §7.3.4.2).
+    /// </summary>
+    private byte ReadOctalEscape(byte firstDigit)
+    {
+        var value = firstDigit - (byte)'0';
+        for (var digits = 1; digits < 3 && Position < _data.Length; digits++)
+        {
+            var next = _data[Position];
+            if (next is < (byte)'0' or > (byte)'7')
+                break;
+            Position++;
+            value = (value << 3) + (next - (byte)'0');
+        }
+
+        return (byte)value;
     }
 
     private byte[] ReadHexString()

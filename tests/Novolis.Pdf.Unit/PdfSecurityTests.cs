@@ -84,6 +84,26 @@ public sealed class PdfSecurityTests
     }
 
     [Test]
+    public async Task PasswordUnlockTrimsSurroundingWhitespace()
+    {
+        await using var source = PdfSources.FromStream(
+            new MemoryStream(BuildEncryptedFixture()),
+            "protected.pdf",
+            "protected");
+        var document = await PdfParser.ParseAsync(
+            source,
+            new PdfOpenOptions
+            {
+                PasswordProvider = static (_, _) => ValueTask.FromResult<string?>("  secret  "),
+            });
+
+        await Assert.That(document.Info.Capabilities.HasFlag(PdfDocumentCapabilities.PasswordUnlocked)).IsTrue();
+        var pages = PdfPageTree.Resolve(document);
+        var plan = PdfContentStreamInterpreter.BuildPlan(document, pages[0]);
+        await Assert.That(plan.Commands.OfType<PdfTextCommand>().Single().Text).IsEqualTo("Protected PDF");
+    }
+
+    [Test]
     public async Task Aes256RevisionFiveDocumentUnlocks()
     {
         await using var source = PdfSources.FromStream(

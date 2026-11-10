@@ -109,7 +109,7 @@ internal sealed class PdfSecurityHandler
             var unlocked = TryUnlock(
                 dictionary,
                 documentId,
-                password,
+                password.Trim(),
                 revision,
                 encryptionObjectNumber);
             if (unlocked is not null)

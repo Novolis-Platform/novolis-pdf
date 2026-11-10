@@ -1122,6 +1122,12 @@ public static class PdfContentStreamInterpreter
                 if (current == (byte)'\\' && _position < _data.Length)
                 {
                     var escaped = _data[_position++];
+                    if (escaped is >= (byte)'0' and <= (byte)'7')
+                    {
+                        bytes.Add(ReadOctalEscape(escaped));
+                        continue;
+                    }
+
                     bytes.Add(escaped switch
                     {
                         (byte)'n' => (byte)'\n',
@@ -1129,6 +1135,9 @@ public static class PdfContentStreamInterpreter
                         (byte)'t' => (byte)'\t',
                         (byte)'b' => (byte)'\b',
                         (byte)'f' => (byte)'\f',
+                        (byte)'(' => (byte)'(',
+                        (byte)')' => (byte)')',
+                        (byte)'\\' => (byte)'\\',
                         _ => escaped,
                     });
                     continue;
@@ -1141,6 +1150,21 @@ public static class PdfContentStreamInterpreter
                     bytes.Add(current);
             }
             return bytes.ToArray();
+        }
+
+        private byte ReadOctalEscape(byte firstDigit)
+        {
+            var value = firstDigit - (byte)'0';
+            for (var digits = 1; digits < 3 && _position < _data.Length; digits++)
+            {
+                var next = _data[_position];
+                if (next is < (byte)'0' or > (byte)'7')
+                    break;
+                _position++;
+                value = (value << 3) + (next - (byte)'0');
+            }
+
+            return (byte)value;
         }
 
         private byte[] ReadHex()

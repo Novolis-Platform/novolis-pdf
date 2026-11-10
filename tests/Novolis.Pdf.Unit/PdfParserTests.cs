@@ -97,6 +97,22 @@ public sealed class PdfParserTests
     }
 
     [Test]
+    public async Task LiteralStringOctalEscapesDecodeBytes()
+    {
+        // ISO 32000 §7.3.4.2: \ddd is 1–3 octal digits; \101 = 'A', \40 = space, \12 = LF.
+        await using var source = PdfSources.FromStream(
+            new MemoryStream(BuildPage("BT /F1 12 Tf 20 160 Td (\\101\\40B\\12C) Tj ET")),
+            "octal-escape.pdf",
+            "octal-escape");
+        var document = await PdfParser.ParseAsync(source);
+        var pages = PdfPageTree.Resolve(document);
+        var plan = PdfContentStreamInterpreter.BuildPlan(document, pages[0]);
+
+        await Assert.That(plan.Commands.OfType<PdfTextCommand>().Single().Text)
+            .IsEqualTo("A B\nC");
+    }
+
+    [Test]
     public async Task TaggedObjectsAndTypedResolutionPreservePdfKinds()
     {
         await using var source = PdfSources.FromStream(
